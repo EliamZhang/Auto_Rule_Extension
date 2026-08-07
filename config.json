@@ -1,0 +1,142 @@
+{
+  "rules_base_dir": "raw",
+  "engine_priorities": {
+    "initial": 1,
+    "transfer": 100,
+    "dishonour": 150,
+    "income": 200,
+    "liability": 300,
+    "all_other_credit": 400,
+    "fee": 500,
+    "catch_all": 999
+  },
+  "engines": {
+    "initial": {
+      "engine_dir": "initial_rule",
+      "rule_files": ["merchant_kb.csv"],
+      "match_types": ["keyword"],
+      "top_n_gaps": 100
+    },
+    "transfer": {
+      "engine_dir": "transfer_rule",
+      "rule_files": [
+        "transfer_counterparty_rules.csv",
+        "transfer_external_high_confidence_rules.csv",
+        "transfer_external_medium_confidence_rules.csv",
+        "transfer_internal_regex_rules.csv"
+      ],
+      "match_types": ["keyword", "regex"],
+      "top_n_gaps": 100
+    },
+    "dishonour": {
+      "engine_dir": "dishonour_rule",
+      "rule_files": ["dishonour_rules.csv"],
+      "match_types": ["keyword", "regex"],
+      "top_n_gaps": 50
+    },
+    "income": {
+      "engine_dir": "income_rule",
+      "rule_files": ["income_pattern_rules.csv"],
+      "match_types": ["regex"],
+      "top_n_gaps": 100
+    },
+    "liability": {
+      "engine_dir": "liability_rule",
+      "rule_files": [
+        "counterparty_keyword_rules.csv",
+        "credit_card_rules.csv",
+        "debt_collection_rules.csv",
+        "debt_consolidation_rules.csv",
+        "dishonours_rules.csv",
+        "home_loan_car_loan_rules.csv",
+        "overdrawn_rules.csv"
+      ],
+      "match_types": ["keyword", "regex"],
+      "top_n_gaps": 150
+    },
+    "all_other_credit": {
+      "engine_dir": "all_other_credit_rule",
+      "rule_files": ["all_other_credit_rules.csv"],
+      "match_types": ["keyword"],
+      "top_n_gaps": 50
+    },
+    "fee": {
+      "engine_dir": "fee_rule",
+      "rule_files": ["fee_classification_rules.csv"],
+      "match_types": ["regex"],
+      "top_n_gaps": 100
+    },
+    "catch_all": {
+      "engine_dir": "catch_all_rule",
+      "rule_files": ["catch_all_rules.csv"],
+      "match_types": ["keyword", "regex"],
+      "top_n_gaps": 200
+    }
+  },
+  "analysis": {
+    "min_pattern_length": 3,
+    "min_pattern_frequency": 5,
+    "normalization": {
+      "remove_dates": true,
+      "remove_amounts": true,
+      "remove_numbers": true,
+      "uppercase": true
+    }
+  },
+  "pattern_classification": {
+    "gambling_indicators": [
+      "CASINO", "BET ", "BETTING", "GAMBLING", "POKER", "SLOTS",
+      "LIMASSOL", " NICOSIA ", " MALTA ", " CYP",
+      "PLAYTKA", "CAESARS", "TAB ", "SPORTSBET", "LADBROKES",
+      "GARETON BV", "FRVN", "SCRN", "BTZ", "BETR",
+      "CASINY", "BET RIGHT", "BETDELUXE", "PUNTIQ",
+      "PLAYUP", "DABBLE", "SURGE AU"
+    ],
+    "card_purchase_prefixes": [
+      "DEBIT CARD PURCHASE ",
+      "VISA DEBIT PURCHASE CARD ",
+      "EFTPOS DEBIT ",
+      "EFTPOS ",
+      "RETAIL PURCHASE "
+    ],
+    "business_indicators": [
+      " PTY LTD", " PTY. LTD.", " PTY L",
+      "SQ *", "ZLR*", "TFR ",
+      " AUS CARD", "CARD XX",
+      "WDL ATM ", "CBA ATM ",
+      "WITHDRAWAL - "
+    ],
+    "generic_keywords": [
+      "RESTAURANT", "CAFE", "PHARMACY", "SUPERMARKET",
+      "MARKET ", "BAKERY", "BUTCHER", "TAKEAWAY", "PIZZA",
+      "MEDICAL", "DENTAL", "SALON", "BARBER", "GROCER",
+      "ATM ", "PETROL", "SERVICE STATION",
+      "INSURANCE", "HARDWARE", "FITNESS", "GYM",
+      "LAUNDROMAT", "NEWSAGENCY", "CONVENIENCE",
+      "CHILDCARE", "KINDERGARTEN", "SCHOOL",
+      "CINEMA", "TOBACCONIST", "LIQUOR",
+      "FRUIT ", "BUTCHER", "HOTEL", "MOTEL",
+      "DENTIST", "DOCTOR"
+    ],
+    "online_indicators": [
+      "REVOLUT", "PAYPAL", "WISE ", "STRIPE", "SQUARE",
+      "APPLE.COM", "GOOGLE ", "MICROSOFT", "AMAZON",
+      "SPOTIFY", "NETFLIX", "DISNEY",
+      " AFTERPAY", "KLARNA",
+      "AVIAGAMES", "IMGVIDES", "DEGABEAT",
+      "TG TALLINN", "INCEUNION", "SKMG",
+      "CLIPVIDOREU", "SPRIGGY",
+      "COURTNEY TIESTO"
+    ]
+  },
+  "large_files": {
+    "merchant_kb.csv": {
+      "skip_pattern_loading": true,
+      "note": "~9,000 rules with ~2.5M merchant rows. Skip for overlap checking to avoid OOM."
+    }
+  },
+  "validation": {
+    "sample_hit_count": 5,
+    "max_regression_changes": 0
+  }
+}

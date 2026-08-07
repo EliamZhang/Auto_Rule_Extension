@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reviews (generated per run)
+reviews/*
+!reviews/.gitkeep
+
+# Baseline snapshots
+baseline/*
+!baseline/.gitkeep
+
+# Input data (user-managed)
+input/*
+!input/.gitkeep
+
+# Sample data
+sample.csv
+
+# Backup files
+*.bak
+raw/**/*.bak
