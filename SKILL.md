@@ -79,9 +79,79 @@ illion 标签为空 + 未分类 → 需要 Claude 自己判断
 
 ### 阶段三：逐引擎智能分析（核心）
 
-对 `gap_summary.json` 中 `engines` 字段的每个引擎，按以下流程操作：
+对 `gap_summary.json` 中 `engines` 字段的每个引擎，按以下流程操作。
 
-#### 3.1 读取已有规则
+**⚠ 核心原则：merchant_kb 优先。凡是可能为商户名/品牌名的 pattern，必须先排查 initial_engine。**
+
+#### 3.0 第一步：判断 pattern 性质 + 先查 merchant_kb（强制执行）
+
+**这是每个 gap pattern 的必经步骤，不可跳过。**
+
+```
+对每个 gap pattern，先回答一个问题：
+  这个 pattern 是「商户名/品牌名」还是「通用描述文本」？
+
+判断标准：
+  - 包含具体商户名称（如 "DORSETT GOLD COAST HOTEL"、"LAVERTON SUPERMARKE"）→ 商户名
+  - 包含品牌/平台名（如 "PLAYTKA"、"BETR"、"AVIAGAMES"）→ 商户名/平台名
+  - 是通用类别词（如 "RESTAURANT"、"INTEREST PAID"、"ATM WITHDRAWAL"）→ 通用文本
+  - 是转账描述（如 "Fast Transfer From"、"Osko Payment"）→ 通用文本
+  - 是费用描述（如 "MONTHLY FEE"、"ATM OPERATOR FEE"）→ 通用文本
+```
+
+**如果判断为「商户名/品牌名」→ 必须先查 merchant_kb**：
+
+```bash
+# 搜索商户是否存在（精确匹配）
+python scripts/search_merchant.py --search "DORSETT GOLD COAST HOTEL"
+
+# 模糊搜索（找相似商户）
+python scripts/search_merchant.py --search "LAVERTON SUPERMARKE" --fuzzy
+
+# 搜索 keyword 中是否包含某词
+python scripts/search_merchant.py --search "BETR" --field keywords
+```
+
+查询结果的处理逻辑：
+
+```
+1. 商户存在 + 有 category → 
+   - 为什么交易没被匹配到？
+   - 检查交易 text 中的具体写法 vs merchant_kb 中的 keywords
+   - 如果 keyword 遗漏 → 建议补充 keywords
+   - 如果 keyword 已包含 → 排查为什么 Aho-Corasick 没匹配（可能是 text 截断/编码问题）
+
+2. 商户存在 + category 为空 → 
+   - 根据 illion 标签 + pattern 语义，建议补充 category
+   - 写入 reviews/<date>/initial_missing_category.csv
+
+3. 商户不存在 → 
+   - 根据 illion 标签 + pattern 语义，建议新增商户
+   - 写入 reviews/<date>/initial_new_merchants.csv
+   - schema: merchant_name, keywords, category, notes
+
+4. 搜索不到任何结果 → 
+   - 可能不是商户名，返回通用文本处理流程
+```
+
+**如果判断为「通用描述文本」→ 按 3.2 决策树分配到对应引擎。**
+
+#### 3.1 引擎选择规则
+
+各引擎的适用范围重新明确：
+
+| 引擎 | 处理什么 | 不处理什么 |
+|------|----------|------------|
+| **initial** | 具体商户名/品牌名的识别 | 通用关键词 |
+| **transfer** | 仅 Internal Transfer / External Transfers | Gambling、Entertainment 等非转账分类 |
+| **dishonour** | 银行拒付/退票消息 | — |
+| **income** | 工资/Centrelink 等收入（需金额阈值） | 不满足金额阈值的文本 |
+| **liability** | 贷款还款、信用卡还款、债务催收等 | 已被 income 分类的交易 |
+| **all_other_credit** | 退款/返现/报销/利息等杂项入账 | 非入账类交易 |
+| **fee** | 各类银行/账户费用 | — |
+| **catch_all** | **仅**通用描述性关键词（非商户名） | 任何具体商户名/品牌名 |
+
+#### 3.2 读取已有规则
 
 读取该引擎在 finv_category_V2 中的所有规则文件，理解：
 - 规则 schema（每列的含义和取值范围）
@@ -89,10 +159,16 @@ illion 标签为空 + 未分类 → 需要 Claude 自己判断
 - 现有规则覆盖了哪些模式
 - 与该引擎相关的 disagreements（从 `gap_summary.json` 中取出）
 
-#### 3.2 对每个 gap 模式做决策
+#### 3.3 对每个 gap 模式做决策
+
+**注意：以下决策树在完成 3.0 的 merchant_kb 排查后执行。对于已确认归 initial_engine 处理的商户 pattern，跳过此决策树。**
 
 ```
 决策树：
+
+0. （前置）这个 pattern 是商户名吗？→ 已完成 3.0 排查，确认归属：
+   - 归 initial → 已写入 initial_new_merchants.csv 或 initial_missing_category.csv ✓
+   - 不是商户名 → 继续下面的判断
 
 1. 这个模式有 illion 标签吗？
    - 有 → illion 标签作为 category 参考 → 跳到 3
@@ -108,17 +184,25 @@ illion 标签为空 + 未分类 → 需要 Claude 自己判断
    - 临时性事件 → 跳过
    - 已有规则可以覆盖 → 跳过，不重复生成
 
-4. 我有多确定不会误伤？（宁可漏判不误判）
+4. 匹配到哪个引擎？（按语义判断，不是按 gap_summary 中的引擎分组）
+   - 转账描述（Fast Transfer、Osko Payment 等）→ transfer_engine
+   - 拒付/退票 → dishonour_engine
+   - 工资/Centrelink + 金额合理 → income_engine
+   - 贷款/信用卡还款/催收 → liability_engine
+   - 退款/返现/利息 → all_other_credit_engine
+   - 费用 → fee_engine
+   - 通用消费关键词（非商户名）→ catch_all_engine
+
+5. 我有多确定不会误伤？（宁可漏判不误判）
    - 模式高度特异（≥3个词，或包含独特商户名）→ confidence 0.85-0.90
    - 模式中等特异（2个词，在特定领域常见）→ confidence 0.80-0.85
    - 模式偏泛（1个常见词 + 有 illion 标签佐证）→ confidence 0.70-0.75
    - 模式太泛 + 无 illion 标签 → 直接跳过
 
-5. 选择 match_type：
+6. 选择 match_type：
    - 固定短语/商户名 → keyword（更安全）
    - 有结构变化但模板固定 → regex
    - 优先 keyword，其次 regex
-   - 如果 illion 说 "Dining Out" 且 pattern 是明确的餐厅名 → keyword
 ```
 
 #### 3.3 生成候选规则
@@ -248,6 +332,7 @@ python scripts/apply_rules.py --review_dir reviews/<date>/ --sync_to D:/project/
   - `overdrawn_rules.csv` → 列：`counterparty, rule_id, match_type, pattern, note`
   - `bnpl_maximum_limits.csv` 是配置文件，不生成规则
 - **transfer**（多文件引擎，必须指定 `target_file`）：
+  - **只处理 Internal Transfer 和 External Transfers 两个 category**
   - `transfer_counterparty_rules.csv` → 列：`keyword, counterparty, match_type`
   - `transfer_external_high_confidence_rules.csv` → 列：`priority, rule_name, category, pattern, dr_cr, description`
   - `transfer_external_medium_confidence_rules.csv` → 同上 schema

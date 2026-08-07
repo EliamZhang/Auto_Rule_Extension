@@ -41,7 +41,7 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 
 #### 1. initial_engine (优先级 1) — 商户名 → 分类
 
-**职责**：通过匹配商户名称来分类交易。这是第一个运行的引擎，负责精确识别已知商户。
+**职责**：通过匹配商户名称来分类交易。这是第一个运行的引擎，负责精确识别已知商户。**对于任何看起来像商户名/品牌名的未分类交易，必须优先排查此引擎。**
 
 **匹配逻辑**：
 - 从 `merchant_kb.csv` 加载 ~256 万商户的 ~3 万 keyword 变体
@@ -52,20 +52,26 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 - 特定的商户名 → category 映射（如 "LAVERTON SUPERMARKET" → "Groceries"）
 - 你需要知道这个商户的**确切名称**和**应该分到哪个 category**
 - 很多商户的 category 为空 → 需要补充分类
+- **新增商户**：merchant_kb 中不存在的商户 + 其 keywords
 
 **不适合**：
 - 通用关键词（如 "SUPERMARKET"）→ 应该给 catch_all
-- 赌博网站 → 应该给 transfer
+
+**排查优先级**：任何未分类的 merchant-like pattern，**必须先执行以下排查**：
+1. 用 `scripts/search_merchant.py` 搜索 merchant_kb 中是否存在该商户
+2. 如果存在但没有 category → 补充 category 建议
+3. 如果存在且有 category → 检查 keyword 是否遗漏（交易 text 中的变体未被 keywords 覆盖）
+4. 如果不存在 → 建议新增商户 + keywords + category
 
 #### 2. transfer_engine (优先级 100) — 转账识别
 
-**职责**：识别内部转账和外部转账，识别交易对手方，**排出**赌博交易。
+**职责**：识别内部转账（Internal Transfer）和外部转账（External Transfers），识别交易对手方。transfer_engine **只输出两个 category**：`Internal Transfer` 和 `External Transfers`。
 
 **规则文件及职责**：
 | 文件 | 用途 |
 |------|------|
 | `transfer_counterparty_rules.csv` | keyword → counterparty 映射 |
-| `transfer_external_high_confidence_rules.csv` | 高置信外部转账 regex（含 category） |
+| `transfer_external_high_confidence_rules.csv` | 高置信外部转账 regex（category=External Transfers） |
 | `transfer_external_medium_confidence_rules.csv` | 中置信外部转账 regex |
 | `transfer_internal_regex_rules.csv` | 内部转账 regex |
 | `transfer_group_exclusion_patterns.csv` | **排除组**：匹配这些的会从结果中过滤掉 |
@@ -76,13 +82,16 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 **匹配逻辑**：
 - 先做内部转账匹配（pairing + regex + indicator）
 - 再做外部转账匹配（regex），用 priority 排序
-- 最后用 exclusion patterns 过滤
-- 匹配成功后设置 category + counterparty
+- 最后用 exclusion patterns 过滤（排除不应被识别为转账的交易）
+- 匹配成功后设置 category（Internal Transfer / External Transfers）+ counterparty
 
 **适合添加的规则**：
-- 赌博/博彩网站（如 BETR, PLAYTKA）→ `transfer_external_*_confidence_rules.csv`（category=Gambling）
+- 新出现的转账描述模式（regex）→ `transfer_external_*_confidence_rules.csv` 或 `transfer_internal_regex_rules.csv`
 - 特定转账对手方 → `transfer_counterparty_rules.csv`
-- 新出现的赌博平台关键词
+
+**不适合**：
+- 赌博/博彩/游戏平台等 → 应优先排查 initial_engine 的 merchant_kb.csv，若为通用文本则归 catch_all
+- 任何非转账分类（Gambling、Entertainment 等）→ 不在 transfer 职责范围内
 
 #### 3. dishonour_engine (优先级 150) — 拒付检测
 
@@ -172,7 +181,9 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 
 #### 8. catch_all_engine (优先级 999) — 兜底关键词
 
-**职责**：**最后的兜底引擎**。用描述性关键词推断分类（如 "BAKERY"→"Dining Out"、"PHARMACY"→"Health"）。
+**职责**：**最后的兜底引擎**。用**描述性通用关键词**推断分类（如 "BAKERY"→"Dining Out"、"PHARMACY"→"Health"）。
+
+**核心定位**：catch_all 处理的是**泛化关键词**，不是具体商户。如果某个 pattern 明确是一个商户名/品牌名，应该优先去 initial_engine 的 merchant_kb.csv 排查，而不是直接加 catch_all 规则。
 
 **匹配逻辑**：
 - 加载 `catch_all_rules.csv`（`rule_name, category, pattern, match_type, confidence`）
@@ -181,13 +192,16 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 - 只能对尚未被前面引擎分类的交易生效
 
 **适合添加的规则**：
-- **通用关键词** → category 映射（如 "RESTAURANT" → "Dining Out"）
-- 单个常见词，不需要特定的商户名
+- **纯通用关键词** → category 映射（如 "RESTAURANT" → "Dining Out"）
+- 单个常见词或词组，不指向特定商户
 - confidence 通常 0.70-0.85
+- 非转账、非费用、非收入、非负债的通用消费关键词
 
 **不适合**：
-- 特定商户名 → 应该给 initial_engine 的 merchant_kb.csv
-- 赌博关键词 → 应该给 transfer_engine
+- **任何具体商户名** → 必须先去 initial_engine 的 merchant_kb.csv 排查
+- 转账相关关键词 → transfer_engine
+- 费用相关关键词 → fee_engine
+- 收入相关关键词 → income_engine
 
 ### 各引擎规则 CSV Schema
 
@@ -240,10 +254,11 @@ D:\project\Auto_Rule_Extension\
 │   └── ...
 ├── input/                 ← 数据入口（.xlsx 分类报告）
 ├── scripts/
-│   ├── analyze_gaps.py    ← 统计层：发现高频未覆盖模式
+│   ├── analyze_gaps.py       ← 统计层：发现高频未覆盖模式
+│   ├── search_merchant.py    ← 工具：搜索 merchant_kb.csv 中的商户/keyword
 │   ├── validate_candidates.py ← 验证层：语法+Schema+重叠检查
-│   ├── baseline.py        ← 基线层：save 保存基线 / diff 模拟影响面
-│   └── apply_rules.py     ← 执行层：写入确认规则到本地 raw/
+│   ├── baseline.py           ← 基线层：save 保存基线 / diff 模拟影响面
+│   └── apply_rules.py        ← 执行层：写入确认规则到本地 raw/
 ├── reviews/               ← 每次运行的审核产物
 │   └── <date>/
 │       ├── gap_summary.json

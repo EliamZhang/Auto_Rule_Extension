@@ -33,3 +33,4 @@ sample.csv
 # Backup files
 *.bak
 raw/**/*.bak
+raw/initial_rule/merchant_kb.csv
