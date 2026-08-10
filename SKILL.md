@@ -28,6 +28,19 @@
 
 ## 执行流程
 
+本 Skill 共 8 个阶段：
+
+| 阶段 | 名称 | 产出 |
+|------|------|------|
+| 一 | 数据准备与缺口发现 | `gap_summary.json` |
+| 二 | 解读分析结果 | 理解 gaps 和 disagreements |
+| 三 | 逐引擎智能分析 | `*_candidates.csv` |
+| 四 | 验证（语法 + 影响面） | `validation_report.json` + `impact_report.json` |
+| 🆕 五 | Artifact 规则确认弹窗 | `confirmed_rules.json` |
+| 🆕 六 | test_rules.py 测试 | `test_report.json` |
+| 🆕 七 | Artifact 测试报告 + 最终确认 | 最终确认规则 JSON |
+| 八 | 执行写入 | 规则写入 `raw/` + 可选 sync |
+
 ### 阶段一：数据准备与缺口发现
 
 1. 检查 `input/` 目录，取最新的 `.xlsx` 文件
@@ -209,6 +222,14 @@ python scripts/search_merchant.py --search "BETR" --field keywords
 
 对每个确认需要的规则，**严格按照该引擎 CSV schema** 生成一条。
 
+⚠️ **生成规则前必读**：[ENGINE_RULE_MECHANISM.md](./ENGINE_RULE_MECHANISM.md) 详细记录了每个引擎的文本归一化方式、匹配逻辑和多匹配策略。关键注意：
+
+- **文本归一化对齐**：keyword 规则需确认匹配环境是 `clean_text()`（大写 [A-Z0-9]）还是原始文本
+- **fee_engine 保留大小写**：`^MONTHLY\s+FEE$` ≠ `^monthly fee$`
+- **all_other_credit 只用 keyword**：regex 规则被加载但不会匹配
+- **收入不是简单关键词匹配**：需金额阈值 + payer_key + 频率模式
+- **transfer 只输出 Internal Transfer / External Transfers**
+
 新增约束：
 - 如果 illion 标签存在且与 pattern 语义一致 → 直接采纳 illion category
 - 如果 illion 标签存在但不太确定 → 降低 confidence 但仍采纳
@@ -262,29 +283,177 @@ python scripts/baseline.py diff --candidates reviews/<date>/ --baseline baseline
 - `中 ⚠`：有少量冲突但优先级不覆盖，或有边界模糊
 - `高 ✗`：有严重冲突（会覆盖已有正确分类）或语法错误
 
-### 阶段五：展示审核报告
+### 阶段五：🆕 Artifact 规则确认弹窗（人工初筛）
 
-逐引擎展示审核摘要。格式：
+**这是新增的交互式确认环节。** 在验证通过后、最终写入前，通过 HTML Artifact 弹窗让用户逐条审核规则。
+
+#### 5.1 生成确认弹窗
+
+读取以下数据源：
+- `reviews/<date>/*_candidates.csv` — 候选规则
+- `reviews/<date>/impact_report.json` — 影响面数据（来自 baseline.py diff）
+
+然后**动态生成 HTML Artifact**，交互设计如下：
 
 ```
-### engine_id — 候选规则 N 条
-现有规则数: XXX → 建议新增 N 条
-
-| status | rule_name | pattern | match_type | confidence | hit_count | illion标签 | 风险 | 说明 |
-|--------|-----------|---------|------------|------------|-----------|------------|------|------|
-| ☐ confirm | xxx | ... | keyword | 0.85 | 1247 | Dining Out | 低 | ... |
-
-操作提示：
-- 将 status 改为 "confirmed" 或 "rejected"
-- 也可以直接删除行来拒绝
-- 确认后回复"确认"来执行写入
+┌─ 顶部统计卡片（总规则/待确认/已确认/已拒绝/已编辑）─┐
+├─ 全选/反选/批量操作按钮 ───────────────────────────┤
+├─ 按引擎分组（可折叠）───────────────────────────────┤
+│  └─ 每条规则卡片 ──────────────────────────────────│
+│     · rule_name, pattern, category, confidence     │
+│     · match_type (keyword/regex badge)             │
+│     · 影响面数据（gain 覆盖数 / conflict 冲突数）   │
+│     · [✅确认] [❌拒绝] [🔧编辑] 按钮               │
+│     · 编辑模式：pattern/category/confidence 变输入框 │
+├─ 底部固定栏 ───────────────────────────────────────│
+│  · 实时统计（已确认 N · 已拒绝 M · 已编辑 K · 待处理 P）│
+│  · [📋 复制结果 JSON] 按钮                          │
+└────────────────────────────────────────────────────┘
 ```
 
-同时展示 disagreements 摘要（如果用户要求）。
+**关键交互**：
+- 点击确认/拒绝 → 卡片变色（绿/红）
+- 点击编辑 → pattern/category/confidence 变为可编辑输入框，保存后变黄色
+- 底部实时更新统计数字
+- "复制结果 JSON" → 将 `{confirmed: [...], rejected: [...], edited: [...]}` 复制到剪贴板
 
-### 阶段六：执行写入（需人工确认）
+#### 5.2 处理用户确认结果
 
-**此阶段必须在用户明确确认后才执行！**
+用户点击"复制结果 JSON"后将内容粘贴给 Claude。Claude 执行：
+
+1. 将粘贴的 JSON 保存为 `reviews/<date>/confirmed_rules.json`
+2. 合并 `confirmed` + `edited`（使用编辑后的新值）作为待测试规则
+3. 忽略 `rejected` 中的规则
+
+**confirmed_rules.json 格式**：
+```json
+{
+  "confirmed": [
+    {
+      "engine": "catch_all",
+      "rule_name": "BAKERY_DiningOut",
+      "pattern": "BAKERY",
+      "category": "Dining Out",
+      "match_type": "keyword",
+      "confidence": 0.80,
+      "target_file": "catch_all_rules.csv"
+    }
+  ],
+  "rejected": [
+    {"engine": "catch_all", "rule_name": "TOO_BROAD", "reason": "用户拒绝"}
+  ],
+  "edited": [
+    {
+      "engine": "catch_all",
+      "rule_name": "COFFEE_DiningOut",
+      "pattern": "COFFEE SHOP",
+      "category": "Dining Out",
+      "match_type": "keyword",
+      "confidence": 0.75,
+      "target_file": "catch_all_rules.csv"
+    }
+  ]
+}
+```
+
+### 阶段六：🆕 test_rules.py 测试
+
+**在真实数据上测试确认后的规则**，验证实际表现。
+
+#### 6.1 执行测试
+
+```bash
+python scripts/test_rules.py \
+    --rules reviews/<date>/confirmed_rules.json \
+    --input input/<latest>.xlsx \
+    --output reviews/<date>/test_report.json \
+    --max-samples 10
+```
+
+#### 6.2 test_rules.py 做了什么
+
+与 `baseline.py diff` 互补：
+- `baseline.py diff` — 需要先 save 基线，侧重"影响面估算"
+- `test_rules.py` — 轻量，直接从 .xlsx 读取，侧重"实际测试"
+
+**测试逻辑**：
+1. 读取 .xlsx 输入数据，按 `classification_status` 拆分已分类/未分类
+2. 对每条规则：
+   - **增益测试**：在未分类交易上做 keyword/regex 匹配 → gain count + 样本
+   - **冲突测试**：在已分类交易上做匹配 → 检查原引擎优先级，判断是否真冲突
+3. 高风险判定：冲突 > 5 笔 或 冲突率 > 10% 或（零增益 + 有冲突）
+
+**输出 test_report.json**：
+```json
+{
+  "summary": {
+    "total_rules": 5, "tested_rules": 5,
+    "total_gain": 1234, "total_conflicts": 23,
+    "conflict_rate": 0.019, "high_conflict_rules": ["rule_name"]
+  },
+  "per_rule": [{
+    "rule_name": "...", "engine": "catch_all",
+    "pattern": "...", "category": "Dining Out",
+    "gain": {"count": 156, "samples": ["..."]},
+    "conflict": {"count": 2, "real_conflict_count": 2, "details": [...]},
+    "is_high_conflict": false
+  }]
+}
+```
+
+### 阶段七：🆕 Artifact 测试报告 + 最终确认
+
+**这是最终确认环节。** 基于实际测试结果，让用户做最终决策。
+
+#### 7.1 生成测试报告 Artifact
+
+Claude 读取 `test_report.json`，动态生成 HTML Artifact：
+
+```
+┌─ 顶部汇总卡片 ──────────────────────────────────────┐
+│  测试规则数 | 新增覆盖 | 潜在冲突 | 预估准确率       │
+├─ ⚠️ 高风险规则警告条（如有）─────────────────────────┤
+├─ 逐规则详情（可折叠）───────────────────────────────│
+│  └─ 每条规则卡片 ──────────────────────────────────│
+│     · 规则信息（pattern, category, confidence）     │
+│     · 📈 新增覆盖 — 笔数 + 交易样本表格             │
+│     · ⚠️ 冲突详情 — 真冲突/同引擎匹配 表格           │
+│     · 交易文本、原引擎、原分类、→新分类              │
+│     · [✅最终确认] [❌剔除] 按钮（逐条）              │
+├─ 底部固定栏 ───────────────────────────────────────│
+│  · 实时统计（已确认/已剔除/待决定）                  │
+│  · [📋 导出最终结果 JSON]  [↩️返回修改]             │
+└────────────────────────────────────────────────────┘
+```
+
+**关键交互**：
+- 有冲突的规则红色高亮，干净的绿色标记
+- 支持逐条最终确认/剔除
+- "导出最终结果 JSON" → 复制到剪贴板
+- "返回修改" → 用户在对话中告诉 Claude 需要调整哪些规则
+
+#### 7.2 处理最终确认结果
+
+用户粘贴最终确认 JSON 后，Claude 将其保存并准备写入。
+
+**最终确认 JSON 格式**（与 confirmed_rules.json 兼容，可直接用于 apply）：
+```json
+[
+  {
+    "engine": "catch_all",
+    "rule_name": "BAKERY_DiningOut",
+    "pattern": "BAKERY",
+    "category": "Dining Out",
+    "match_type": "keyword",
+    "confidence": 0.80,
+    "target_file": "catch_all_rules.csv"
+  }
+]
+```
+
+### 阶段八：执行写入（需人工最终确认）
+
+**此阶段必须在阶段七最终确认后才执行！**
 
 写入本地 `raw/` 目录：
 ```
@@ -293,8 +462,10 @@ python scripts/apply_rules.py --review_dir reviews/<date>/
 
 同时同步到 finv_category_V2：
 ```
-python scripts/apply_rules.py --review_dir reviews/<date>/ --sync_to D:/project/finv_category_V2
+python scripts/apply_rules.py --review_dir reviews/<date>/ --sync_to <finv_path>
 ```
+
+**注意**：如果最终确认规则来自阶段七的 JSON（而非 CSV status 列），需要先将规则写回对应的 `*_candidates.csv` 并标记 `status="confirmed"`，以兼容 `apply_rules.py` 的读取逻辑。或者直接修改 `apply_rules.py` 使其也支持 JSON 输入。
 
 ## 保守策略（硬性约束）
 
@@ -305,6 +476,81 @@ python scripts/apply_rules.py --review_dir reviews/<date>/ --sync_to D:/project/
 5. **宁可漏判也不要误判**
 6. **不自动修改已有规则**：只新增，不修改不删除
 7. **每个引擎的 CSV schema 必须严格匹配**
+
+## 🆕 Artifact 生成指南
+
+阶段五和阶段七需要 Claude 动态生成 HTML Artifact。参考实现位于：
+- `reviews/<date>/confirmation_artifact.html` — 规则确认弹窗模板
+- `reviews/<date>/test_report_artifact.html` — 测试报告模板
+
+### 确认弹窗 (confirmation_artifact.html)
+
+**数据嵌入方式**：将 `*_candidates.csv` + `impact_report.json` 的数据以内联 `<script>` 标签嵌入 HTML。
+
+**嵌入数据结构**：
+```javascript
+const RULES = [
+  {
+    engine: "catch_all",
+    rule_name: "BAKERY_DiningOut",
+    pattern: "BAKERY",
+    category: "Dining Out",
+    match_type: "keyword",
+    confidence: 0.80,
+    target_file: "catch_all_rules.csv",
+    gain: 156,      // 来自 impact_report.json
+    conflict: 0     // 来自 impact_report.json
+  }
+];
+```
+
+**配色方案**：
+- 确认 → 绿色 (#059669)
+- 拒绝 → 红色 (#DC2626)
+- 编辑 → 橙色 (#D97706)
+- 待处理 → 蓝色 (#1D4ED8)
+- 支持深色/浅色双主题
+
+### 测试报告 (test_report_artifact.html)
+
+**数据嵌入方式**：将 `test_report.json` 的完整内容以内联 `<script>` 标签嵌入。
+
+**交互状态**：每条规则维护 `finalState[idx]`：`'pending'` | `'confirmed'` | `'removed'`
+
+**冲突展示**：
+- 🔴 真冲突（is_real_conflict=true）→ 红色高亮表格
+- 🔵 同引擎匹配（is_real_conflict=false）→ 蓝色标识，非真冲突
+- 高风险规则（is_high_conflict=true）→ 卡片红色左边框 + ⚠️ 标记
+
+### 生成流程
+
+```
+Claude 读取数据 → 内嵌到 HTML → Write 到 .html 文件 → Artifact 工具发布
+```
+
+如果 Artifact 发布不可用（如 API key 认证模式），HTML 文件仍可在浏览器中直接打开使用。
+
+## 🆕 新增脚本
+
+### test_rules.py
+
+```bash
+python scripts/test_rules.py \
+    --rules reviews/<date>/confirmed_rules.json \
+    --input input/<latest>.xlsx \
+    --output reviews/<date>/test_report.json \
+    --max-samples 10
+```
+
+**输入**：
+- `--rules`：确认规则 JSON（数组 或 `{confirmed, edited, rejected}` 对象格式）
+- `--input`：原始交易分类报告 .xlsx
+- `--output`：测试报告 JSON 输出路径
+- `--max-samples`：每条规则最多提取的样本数（默认 10）
+
+**与 baseline.py 的关系**：互补而非替代。
+- `baseline.py save + diff` → 宏观影响面分析（需要先存基线）
+- `test_rules.py` → 轻量实际测试（直接从 .xlsx 读，适合确认后快速验证）
 
 ## illion 标签特别说明
 

@@ -287,6 +287,31 @@ D:\project\Auto_Rule_Extension\
 11. （可选）执行 apply_rules.py --sync_to <finv_path> 同步到 finv_category_V2
 ```
 
+## 引擎规则使用机制
+
+> **必读参考**：[ENGINE_RULE_MECHANISM.md](./ENGINE_RULE_MECHANISM.md) — 详细记录了 finv_category_V2 中 8 个引擎各自如何**加载、存储、匹配、覆盖规则**。生成候选规则前必须参考该文档，确保生成的规则与目标引擎的匹配逻辑兼容。
+
+关键差异速查：
+
+| 引擎 | 文本归一化 | 匹配方式 | 多匹配策略 |
+|------|-----------|---------|-----------|
+| initial | `clean_text()` 大写 [A-Z0-9]，去通道前缀 | Aho-Corasick + 全词边界 | 最长 keyword 优先 |
+| transfer | `.lower()` 保留特殊字符 | `str.contains` 向量化 regex | 先匹配先得（priority 排序） |
+| dishonour | 原始 text（case=False） | `str.contains` keyword/regex | OR（任意命中） |
+| income | `clean_text()` 大写 [A-Z0-9] | 多阶段复合决策树 | 多信号综合 + 金额阈值 |
+| liability | 混合（取决于子模块） | 多子模块 pipeline | 各模块独立排序 |
+| all_other_credit | 原始 text（case=False） | `str.contains` **仅 keyword** | OR |
+| fee | 空格归一化，**保留原始大小写** | `re.search` | 先匹配先得（规则列表顺序） |
+| catch_all | `clean_text()` 大写 [A-Z0-9] | `str.find` + 全词 / `re.search` | 最高 confidence 优先 |
+
+⚠️ 生成规则时必须注意：
+- **文本归一化对齐**：keyword 规则在 `clean_text()` 后的文本上匹配（标点全部移除！），regex 规则的环境因引擎而异
+- **all_other_credit 只用 keyword**：regex 规则被加载但不会匹配
+- **fee 保留原始大小写**：`^MONTHLY\s+FEE$` ≠ `^monthly fee$`
+- **income 不是简单关键词匹配**：必须满足金额阈值 + payer_key + 频率模式
+- **transfer 只能输出 Internal Transfer / External Transfers**：不能生成其他分类
+- **initial_engine 的通道前缀被自动去除**：不需要在 pattern 中包含 `DEBIT CARD PURCHASE ` 等前缀
+
 ## 重要约定
 
 - 任何规则写入操作前必须经过人工确认，不可自动执行
@@ -294,3 +319,4 @@ D:\project\Auto_Rule_Extension\
 - 输入必须是 finv_category_V2 流水线处理后的 .xlsx 报告，包含 classification_status 列
 - `raw/` 目录的规则文件是本地工作副本，初始从 finv_category_V2 复制，后续由 apply_rules.py 维护
 - 同步到 finv_category_V2 后，需在 finv_category_V2 中手动运行 baseline.py 更新基线
+- **生成每个候选规则前，必须参考 [ENGINE_RULE_MECHANISM.md](./ENGINE_RULE_MECHANISM.md) 确认文本归一化方式与匹配逻辑**
