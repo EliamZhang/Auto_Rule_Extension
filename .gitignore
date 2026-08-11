@@ -27,10 +27,9 @@ baseline/*
 input/*
 !input/.gitkeep
 
-# Sample data
-sample.csv
-
 # Backup files
 *.bak
 raw/**/*.bak
+
+# Large files (需要在 README 中说明获取方式)
 raw/initial_rule/merchant_kb.csv

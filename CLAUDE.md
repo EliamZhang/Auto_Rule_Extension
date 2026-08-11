@@ -34,7 +34,7 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 | 200 | income | `income_pattern_rules.csv` + `income_config.csv` | regex + 金额阈值 + 行为特征 | `clean_text()` 大写 | ~106 |
 | 300 | liability | 8 个 CSV（多格式） | keyword(全词\b) + regex 双 tier | `upper().strip()` | ~500+ |
 | 400 | all_other_credit | `all_other_credit_rules.csv` | keyword(re.escape) 仅入账 | 无(flags) | ~30 |
-| 500 | fee | `fee_classification_rules.csv` ⚠ | regex(硬编码,大小写敏感,^锚定) | 仅压缩空格 | ~87(源码中) |
+| 500 | fee | `fee_classification_rules.csv` | regex(大小写敏感,^锚定) | 仅压缩空格 | ~87 |
 | 999 | catch_all | `catch_all_rules.csv` | keyword(全词) + regex, 最高conf胜出 | `clean_text()` 大写 | ~280 |
 
 ### 每个引擎的代码级规则使用详解
@@ -474,41 +474,25 @@ CSV: rule_type, pattern, required_terms
 
 #### 7. fee_engine (优先级 500) — 费用识别
 
-**源码位置**: `fee_engine/domain/classification.py` (909行)
+**源码位置**: `fee_engine/domain/classification.py` (258行)
 
-⚠ **关键发现**: fee_engine 的规则是**硬编码在 Python 源码中**的（`FEE_RULES` 列表，L39-717），不是从 CSV 动态加载的！`fee_classification_rules.csv` 是历史导出格式，实际运行时引擎使用的是源码中的 `FEE_RULES` 列表。
+##### 规则加载 (`load_fee_rules`)
 
-##### 规则结构
+规则完全从 CSV 动态加载，不再硬编码：
+
 ```python
-FEE_RULES: list[FeeRule] = [
-    (rule_name, category, pattern, counterparty_label),
-    ...
-]
-# FeeRule = tuple[str, str, str, str]
+# load_fee_rules() 从 CSV 读取规则
+CSV schema: priority, rule_name, category, pattern, counterparty, match_type, zero_amount_reject, description
+→ 按 priority 升序排列（数字越小越先匹配）
+→ re.compile(pattern) — 无 IGNORECASE flag
 ```
 
-##### 规则优先级（源码中的分组顺序）
-| 优先级组 | 内容 | category |
-|---------|------|----------|
-| 0 | 透支/超限费用 (8条) | **Overdrawn** |
-| 1 | 国际交易费 (2条) | Fees |
-| 2 | ATM 操作费 (12条) | Fees |
-| 3 | 国际交易/货币转换费 (8条) | Fees |
-| 4 | 外汇费 (1条) | Fees |
-| 5 | 含外汇转换费 (1条) | Fees |
-| 6 | 费用已包含/豁免 (1条) | Fees |
-| 7 | 银行账户/服务费 (10条) | Fees |
-| 8 | 现金预付费 (3条) | Fees |
-| 10 | 滞纳金 (5条) | Fees |
-| 12 | CommBank AdvancePay (1条) | Fees |
-| 13 | Raiz 维护费 (2条) | Fees |
-| 14 | UWU 工会费 (2条) | Fees |
-| 15 | 费用退款 (2条) | Fees |
-| 16 | 费用豁免 (2条) | Fees |
-| 17 | ATM 收费 (2条) | Fees |
-| 22 | 贷款管理费 (1条) | Fees |
-| 23 | 外汇费嵌入 (1条) | Fees |
-| 24 | 利息费用 (15条) | Fees |
+关键代码细节：
+- **CSV 动态加载**: 规则从 `fee_classification_rules.csv` 读取，可直接追加 CSV 添加新规则
+- **category 映射**: CSV 中用 `"fee"`（小写），引擎通过 `_CATEGORY_MAP` 自动转换为 `"Fees"`。`"Overdrawn"` 直接透传
+- **大小写敏感**: `re.compile(pattern)` 无 flags，与原始文本大小写完全一致才匹配
+- **zero_amount_reject**: CSV 列 `zero_amount_reject=true` 的规则在金额为 $0.00 时被撤销
+- 空规则名或空 pattern 的行自动跳过，正则编译失败的行也自动跳过
 
 ##### 匹配逻辑 (`FeeClassifier.predict`)
 ```python
@@ -516,7 +500,7 @@ for rule_name, category, pattern, counterparty in self.rules:
     if pattern.search(text):  # 第一个匹配胜出
         return FeePrediction(...)
 ```
-- 第一匹配胜出，按 `FEE_RULES` 列表顺序
+- 第一匹配胜出，按 priority 升序
 - **所有规则都用 regex** — 编译为 `re.compile(pattern)`
 - 未使用 `re.IGNORECASE` — **大小写敏感**！
 
@@ -525,19 +509,19 @@ for rule_name, category, pattern, counterparty in self.rules:
 re.sub(r"\s+", " ", str(value)).strip()  # 仅压缩空格，保留原样大小写
 ```
 
-##### $0 金额排除 (`_AMOUNT_ZERO_REJECT_RULES`)
-以下规则在金额为 $0.00 时被撤销（是信息性备注不是实际费用）：
-- `includes_foreign_currency_fee`, `fees_included_waived`, `monthly_fee_waived`
-- `ofi_atm_operator_fee`, `foreign_fee_aud`, `interest_bare`, `interest_bare_title`
-- `loan_administration_charge`
+##### $0 金额排除 (`zero_amount_reject`)
+
+CSV 中 `zero_amount_reject=true` 的规则，在交易金额为 $0.00 时被撤销。
+这些行通常是信息性备注（如 "Includes Foreign Currency Conversion Fee $0.81"），不是实际扣费。
+具体规则由 CSV 中的 `zero_amount_reject` 列控制，不再硬编码在源码中。
 
 ##### 对规则生成的影响
-- **规则是硬编码的！** 要添加新规则需要修改 Python 源码，不能仅追加 CSV
+- **规则从 CSV 加载，可直接追加** — 不再需要修改 Python 源码
 - **大小写完全敏感** — `^MONTHLY FEE$` 不匹配 `Monthly Fee`
-- **所有 pattern 都是 ^ 锚定的** — 匹配文本开头
-- **category 只有两个值**: "Overdrawn"（仅 section 0）和 "Fees"（其余所有）
-- **Overdrawn 规则必须在最前面** — 确保透支费用覆盖通用费用
-- **新规则需要插入到合适位置**（在哪个 section 之后），不是简单追加到末尾
+- **pattern 通常 `^` 锚定** — 匹配文本开头
+- **category 只有两个值**: `"Overdrawn"` 或 `"Fees"`（CSV 中用 `"fee"`，引擎自动转换为 `"Fees"`）
+- **Overdrawn 规则必须 priority 更小** — 确保透支费用覆盖通用费用
+- **新规则需要设置合适的 priority** — 插入到正确的优先级位置
 - **counterparty 是描述性标签**（如 "International Transaction Fee"），不是具体商户名
 
 ---
@@ -598,16 +582,15 @@ rule_type, pattern, required_terms
 - `required_terms`: 分号分隔的必须同时出现的词（小写），regex 模式时所有 term 都必须满足
 - **代码差异**: all_other_credit 只使用 keyword 模式且忽略 required_terms
 
-#### fee_engine ⚠ 硬编码规则
+#### fee_engine
 ```
 priority, rule_name, category, pattern, counterparty, match_type, zero_amount_reject, description
 ```
-- **⚠ 致命发现**: 规则硬编码在 `fee_engine/domain/classification.py` 的 `FEE_RULES` 列表中，**不从 CSV 加载**！
-- 添加新规则需要修改 Python 源码
-- 所有 pattern 是 `^` 锚定的 regex
-- **大小写敏感**（不使用 `re.IGNORECASE`）
-- category 仅两个值: `"Overdrawn"` 或 `"Fees"`
-- priority 分组含义见上方代码级详解
+- **规则从 CSV 动态加载**，不再硬编码在 Python 源码中
+- 所有 pattern 是 `^` 锚定的 regex，**大小写敏感**（不使用 `re.IGNORECASE`）
+- category 仅两个值: `"fee"`（CSV中，引擎自动转为 `"Fees"`）或 `"Overdrawn"`
+- `zero_amount_reject=true` 的规则在金额为 $0.00 时被撤销
+- priority 升序排列，数字越小优先级越高
 
 #### catch_all_engine
 ```
@@ -757,8 +740,9 @@ merchant_name, keywords, link, category, category_source, keyword_updated_at, ca
 
 ```
 D:\project\Auto_Rule_Extension\
-├── CLAUDE.md              ← 本文件
-├── SKILL.md               ← Claude Code Skill 提示词
+├── CLAUDE.md              ← 本文件（项目上下文 + 引擎机制详解）
+├── SKILL.md               ← Skill 入口（指向 .claude/skills/）
+├── README.md              ← 项目概览 + 快速开始
 ├── config.json            ← 配置（引擎定义、分析参数）
 ├── raw/                   ← 各引擎规则 CSV 的本地副本
 │   ├── initial_rule/merchant_kb.csv
@@ -767,14 +751,19 @@ D:\project\Auto_Rule_Extension\
 │   └── ...
 ├── input/                 ← 数据入口（.xlsx 分类报告）
 ├── scripts/
-│   ├── analyze_gaps.py       ← 统计层：发现高频未覆盖模式
-│   ├── search_merchant.py    ← 工具：搜索 merchant_kb.csv 中的商户/keyword
+│   ├── common.py              ← 共享工具（配置加载、路径解析、引擎元数据）
+│   ├── analyze_gaps.py        ← 统计层：发现高频未覆盖模式
+│   ├── label_compare.py       ← 质检层：illion vs finv 分类差异质检报告
+│   ├── search_merchant.py     ← 工具：搜索 merchant_kb.csv 中的商户/keyword
 │   ├── validate_candidates.py ← 验证层：语法+Schema+重叠检查
-│   ├── baseline.py           ← 基线层：save 保存基线 / diff 模拟影响面
-│   └── apply_rules.py        ← 执行层：写入确认规则到本地 raw/
+│   ├── baseline.py            ← 基线层：save 保存基线 / diff 模拟影响面
+│   ├── test_rules.py          ← 测试层：确认规则在真实数据上的实际表现
+│   └── apply_rules.py         ← 执行层：写入确认规则到本地 raw/
+├── .claude/skills/         ← Claude Code Skill 定义
 ├── reviews/               ← 每次运行的审核产物
 │   └── <date>/
 │       ├── gap_summary.json
+│       ├── label_compare_report.xlsx
 │       ├── <engine>_candidates.csv
 │       ├── validation_report.json
 │       └── impact_report.json
@@ -792,17 +781,20 @@ D:\project\Auto_Rule_Extension\
 3. 用户启动 Claude Code Skill（/auto-rule-extension）
 4. Claude 执行 baseline.py save → 保存当前分类状态快照
 5. Claude 执行 analyze_gaps.py → 生成各引擎的 gap_summary.json
-6. Claude 读取 gap_summary + 各引擎已有规则 → 逐引擎分析 → 生成候选规则 CSV
-7. Claude 执行 validate_candidates.py → 语法/Schema 验证
-8. Claude 执行 baseline.py diff → 影响面分析（gain/conflict）
-9. Claude 展示审核报告，用户逐引擎确认
-10. 用户确认后，Claude 执行 apply_rules.py → 写入本地 raw/
-11. （可选）执行 apply_rules.py --sync_to <finv_path> 同步到 finv_category_V2
+6. Claude 执行 label_compare.py → 生成 illion vs finv 分类差异质检报告
+7. Claude 读取 gap_summary + label_compare_report + 各引擎已有规则 → 逐引擎分析 → 生成候选规则 CSV
+8. Claude 执行 validate_candidates.py → 语法/Schema 验证
+9. Claude 执行 baseline.py diff → 影响面分析（gain/conflict）
+10. 🔴 弹出规则确认窗口，用户逐引擎审核候选规则
+11. Claude 执行 test_rules.py → 确认规则在实际数据上的表现
+12. Claude 打印测试分析报告 → 🔴 弹出最终确认窗口
+13. 用户最终确认后，Claude 执行 apply_rules.py → 写入本地 raw/
+14. （可选）执行 apply_rules.py --sync_to <finv_path> 同步到 finv_category_V2
 ```
 
 ## 引擎规则使用机制
 
-> **必读参考**：[ENGINE_RULE_MECHANISM.md](./ENGINE_RULE_MECHANISM.md) — 详细记录了 finv_category_V2 中 8 个引擎各自如何**加载、存储、匹配、覆盖规则**。生成候选规则前必须参考该文档，确保生成的规则与目标引擎的匹配逻辑兼容。
+每个引擎的文本归一化、匹配逻辑、CSV Schema 约束等代码级细节已在上方各节中详细说明。生成候选规则前必须确认目标引擎的匹配逻辑兼容。
 
 关键差异速查：
 
@@ -832,4 +824,4 @@ D:\project\Auto_Rule_Extension\
 - 输入必须是 finv_category_V2 流水线处理后的 .xlsx 报告，包含 classification_status 列
 - `raw/` 目录的规则文件是本地工作副本，初始从 finv_category_V2 复制，后续由 apply_rules.py 维护
 - 同步到 finv_category_V2 后，需在 finv_category_V2 中手动运行 baseline.py 更新基线
-- **生成每个候选规则前，必须参考 [ENGINE_RULE_MECHANISM.md](./ENGINE_RULE_MECHANISM.md) 确认文本归一化方式与匹配逻辑**
+- **生成每个候选规则前，必须参考本文件上方对应引擎的章节确认文本归一化方式与匹配逻辑**

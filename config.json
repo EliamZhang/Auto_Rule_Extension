@@ -58,13 +58,15 @@
       "engine_dir": "all_other_credit_rule",
       "rule_files": ["all_other_credit_rules.csv"],
       "match_types": ["keyword"],
-      "top_n_gaps": 50
+      "top_n_gaps": 50,
+      "note": "代码中仅实现 keyword 匹配，regex 规则虽然 CSV schema 支持但运行时会被忽略。"
     },
     "fee": {
       "engine_dir": "fee_rule",
       "rule_files": ["fee_classification_rules.csv"],
       "match_types": ["regex"],
-      "top_n_gaps": 100
+      "top_n_gaps": 100,
+      "note": "规则从 fee_classification_rules.csv 动态加载。可直接追加 CSV 添加新规则，无需修改 Python 源码。"
     },
     "catch_all": {
       "engine_dir": "catch_all_rule",
