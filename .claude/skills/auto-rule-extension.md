@@ -65,8 +65,8 @@ description: 为 finv_category_V2 交易分类流水线的 8 个引擎自动发�
 
 阶段五和阶段七需要人工介入。实现方式是：
 
-1. **生成交互式 HTML 页面** → Write 到 `reviews/<date>/` 目录
-2. **自动打开浏览器** → `start reviews/<date>/xxx.html`（Windows 上自动弹出）
+1. **生成交互式 HTML 页面** → Write 到 `reviews/<YYYY-MM-DD_HHMM>/` 目录
+2. **自动打开浏览器** → `start reviews/<YYYY-MM-DD_HHMM>/xxx.html`（Windows 上自动弹出）
 3. **AskUserQuestion 等待结果** → 用户在 HTML 中完成操作后，点击"复制结果 JSON"按钮，回到 Claude Code 将 JSON 粘贴到 AskUserQuestion 的输入框
 4. **收到结果后自动推进** → AI 立即进入下一阶段，无需用户说"继续"
 
@@ -81,6 +81,7 @@ AI: Write HTML → Bash start xxx.html → AskUserQuestion("请粘贴确认结�
 ### 阶段一：数据准备与缺口发现
 
 1. 检查 `input/` 目录，取最新的 `.xlsx` 文件，**记录文件名**（后续阶段复用）
+2. **确定输出目录**：使用格式 `reviews/<YYYY-MM-DD_HHMM>/`（日期+时间，同一天多次运行不覆盖）
 2. 执行 `scripts/analyze_gaps.py`：
    ```
    python scripts/analyze_gaps.py --input input/<latest>.xlsx --output reviews/<date>/
@@ -311,9 +312,33 @@ python scripts/search_merchant.py --search "BETR" --field keywords
 | **dishonour** | 银行拒付/退票消息 | — |
 | **income** | 工资/Centrelink 等收入（需金额阈值） | 不满足金额阈值的文本 |
 | **liability** | 贷款还款、信用卡还款、债务催收等 | 已被 income 分类的交易 |
-| **all_other_credit** | 退款/返现/报销/利息等杂项入账 | 非入账类交易 |
+| **all_other_credit** | 退款/返现/报销/**利息**等杂项入账 | 非入账类交易 |
 | **fee** | 各类银行/账户费用 | — |
-| **catch_all** | **仅**通用描述性关键词（非商户名） | 任何具体商户名/品牌名 |
+| **catch_all** | **仅**通用描述性关键词（非商户名），**且必须是其他 7 个引擎都无法处理的** | 任何具体商户名/品牌名；能被其他引擎处理的 |
+
+**🚨 catch_all 硬性前置检查（强制，分配任何规则到 catch_all 前必须通过）**
+
+```
+在把任何规则分配给 catch_all 之前，必须逐条确认以下问题：
+
+1. 这是入账交易（credit）吗？
+   → 是 → 先检查 all_other_credit（优先级 400），只有 all_other_credit 也处理不了才考虑 catch_all
+   例: INTEREST PAID 是入账 → 归 all_other_credit，不是 catch_all
+
+2. 这是费用描述吗？
+   → 是 → 归 fee_engine，不是 catch_all
+   例: ATM OPERATOR FEE → fee
+
+3. 这是转账描述吗？
+   → 是 → 归 transfer_engine，不是 catch_all
+
+4. 这是商户名/品牌名吗？
+   → 是 → 走 3.0 流程查 merchant_kb → initial，不是 catch_all
+
+5. 只有以上全部为「否」时，才归 catch_all
+   → 即：非入账、非费用、非转账、非商户名的纯通用描述性文本
+   例: "RESTAURANT"（就餐通用词，不是具体商户名）→ catch_all ✓
+```
 
 #### 3.1.1 ⚡ 代码级规则约束速查（生成规则前必读）
 
@@ -413,6 +438,20 @@ python scripts/search_merchant.py --search "BETR" --field keywords
 #### 3.4 写入候选规则 CSV
 
 写入 `reviews/<date>/<engine_id>_candidates.csv`。
+
+**🚨 强制规则：永远用合并模式，禁止覆盖已有候选（否则会丢规则！）**
+
+```
+正确流程：
+1. 如果 CSV 已存在 → 先 pd.read_csv() 或 csv.DictReader() 读取已有条目
+2. 新增条目追加到已有列表（去重：rule_name 相同则覆盖更新）
+3. 合并后统一写入
+4. 禁止直接 `w` 模式打开已有候选 CSV 写入新内容
+
+错误示范（会导致规则丢失）：
+  ❌ revise_candidates.py 用 `w` 模式覆盖了 initial_candidates.csv
+  ❌ 第一次生成 51 条，第二次修改时覆盖只剩 19 条，丢失 50 条通用商户
+```
 
 格式要求：
 - 列名与原始 CSV 完全一致（schema 见 CLAUDE.md）
