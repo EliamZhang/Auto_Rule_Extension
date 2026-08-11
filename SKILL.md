@@ -151,6 +151,30 @@ python scripts/search_merchant.py --search "BETR" --field keywords
 | **fee** | 各类银行/账户费用 | — |
 | **catch_all** | **仅**通用描述性关键词（非商户名） | 任何具体商户名/品牌名 |
 
+#### 3.1.1 ⚡ 代码级规则约束速查（生成规则前必读）
+
+以下是来自 finv_category_V2 源码的关键约束，违反将导致规则无法正确匹配：
+
+| 引擎 | 文本预处理 | 大小写要求 | 匹配方式 | 关键约束 |
+|------|----------|----------|---------|---------|
+| **initial** | `clean_text()`: 仅 `[A-Z0-9 ]` | **大写** | Aho-Corasick 全词 + 最长胜出 | keyword 不能是 STOPWORDS 独立 token（70个），每商户最多50变体，`Financial Institutions` 整行被过滤 |
+| **transfer** | `lower().strip()` | **小写** | regex 按 priority 第一匹配 | **regex 必须用小写**，dr_cr 列可选（debit/credit/空），对手方是子串匹配非全词 |
+| **dishonour** | 无预处理 | 不敏感(flags) | keyword(re.escape) OR regex+required_terms(AND) | keyword 自动 `re.escape` 转义特殊字符 |
+| **income** | `clean_text()` 大写 | 大写 | 仅 regex + 金额阈值 + 行为特征 | **不是纯文本匹配**，低于 $100 除非有工资历史否则不触发 |
+| **liability** | `upper().strip()` | 大写 | 多格式(全词\b/regex/条件) | counterparty 是全词，credit_card 的 keyword 列实际是 regex，home_loan 是 Format A 多字段 |
+| **all_other_credit** | 无预处理 | 不敏感(flags) | **仅 keyword** (re.escape) | **regex 模式未实现**，required_terms 被忽略，只处理入账(credit) |
+| **fee** ⚠ | 仅压缩空格 | **大小写敏感** | regex 第一匹配，规则硬编码 | **规则在 Python 源码中硬编码，不从 CSV 加载！** 添加规则需修改 `fee_engine/domain/classification.py` |
+| **catch_all** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，confidence 建议 0.70-0.85 |
+
+**跨引擎关键交互**（来自 `orchestrator.py`）：
+- initial 的 "Financial Institutions"/"Debt Collection"/"Debt Consolidation" 在 pipeline 中被清除，由 liability 兜底
+- liability 排除已被 income 分类为 Wages/Centrelink 的行
+- all_other_credit 可以覆盖 "External Transfers"
+- income_engine 复用 initial_engine 的 cached automaton 做 KB counterparty 查找
+- 后执行的引擎总是覆盖前面的，**不管 confidence 高低**
+
+**fee_engine 特别警告**: `fee_classification_rules.csv` 是历史导出格式，**实际运行时代码使用的是硬编码的 `FEE_RULES` 列表**。如果要添加 fee 规则，需要在 `D:\project\finv_category_V2\fee_engine\domain\classification.py` 中修改源码。Analyze 时应标记 `gap_summary.json` 中归给 fee 的 pattern，但候选规则要生成到 `fee_candidates.csv` 并标注"需修改源码"。
+
 #### 3.2 读取已有规则
 
 读取该引擎在 finv_category_V2 中的所有规则文件，理解：
@@ -305,6 +329,13 @@ python scripts/apply_rules.py --review_dir reviews/<date>/ --sync_to D:/project/
 5. **宁可漏判也不要误判**
 6. **不自动修改已有规则**：只新增，不修改不删除
 7. **每个引擎的 CSV schema 必须严格匹配**
+8. **代码级匹配约束**（来自 finv_category_V2 源码分析）：
+   - **transfer regex 必须用小写** — 引擎用 `text.lower()` 预处理
+   - **catch_all keyword 必须是大写且仅含 `[A-Z0-9 ]`** — 引擎用 `clean_text()` 后做全词匹配
+   - **all_other_credit 只支持 keyword 模式** — regex 在代码中未实现
+   - **fee 规则是硬编码的** — 需修改 Python 源码而非仅追加 CSV
+   - **liability counterparty 匹配是全词 `\b...\b`** — 不会子串匹配
+   - **transfer counterparty 匹配是子串** — 会子串匹配
 
 ## illion 标签特别说明
 
