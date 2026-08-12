@@ -360,6 +360,11 @@ keyword 必须是 `clean_text()` 归一化后的形式，因为引擎在加载�
   2. 仅保留 [A-Z0-9 ]，所有特殊字符替换为空格
      去除的字符包括: * / & . , ' - ( ) + # $ @ ! 等
   3. 压缩多余空格（多空格→单空格，首尾去空格）
+  4. 🚨 竖线 | 分隔多个 keyword 时，| 两边不能有空格！
+      ✅ 正确: "KEYWORD1|KEYWORD2|KEYWORD3"
+      ❌ 错误: "KEYWORD1 | KEYWORD2 | KEYWORD3"
+     原因: 引擎用 pipe 分隔符 split 后不 strip()，空格会被当作 keyword 的一部分，
+     导致 " KEYWORD2"（带前导空格）永远无法匹配 clean_text 后的文本。
 
 示例：
   "McDonald's"        → "MCDONALD S"
@@ -454,6 +459,7 @@ for _, row in updates.iterrows():
 2. ❌ 写入前不做去重 → 会追加重复 keyword
 3. ❌ 用 `pd.read_csv` 直接覆盖写回（可能破坏 BOM/编码）→ 用 `encoding='utf-8-sig'`
 4. ❌ 不备份就直接改 → 必须先 `shutil.copy` 备份
+5. ❌ keyword 拼接时 | 两边加空格（如 `"KW1 | KW2"`）→ 必须 **无空格** 拼接（`"KW1|KW2"`），引擎 split 后不会 strip()，带空格的 keyword 无法匹配
 
 ```
 ##### 3.4.2 其他引擎：标准流程

@@ -23,6 +23,16 @@ from pathlib import Path
 import pandas as pd
 
 
+def _sanitize_keywords(kw_str: str) -> str:
+    """Strip whitespace around each keyword and pipe separator.
+
+    "KW1 | KW2 | KW3" → "KW1|KW2|KW3"
+    "  KW1  |  KW2  " → "KW1|KW2"
+    """
+    parts = [p.strip() for p in str(kw_str).split("|")]
+    return "|".join(p for p in parts if p)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Apply keyword updates to merchant_kb.csv")
     parser.add_argument("--review_dir", required=True, help="Directory containing initial_keyword_updates.csv")
@@ -50,6 +60,15 @@ def main():
     # Load KB
     kb = pd.read_csv(kb_path, dtype=str).fillna("")
     print(f"KB: {len(kb)} rows")
+
+    # 🚨 Sanitize keywords column: strip spaces around pipe separators
+    # Engine splits on "|" without calling strip(), so "KW1 | KW2" → ["KW1", " KW2"]
+    # and the leading space in " KW2" causes permanent match failures.
+    dirty_mask = kb["keywords"].str.contains(r"\s*\|\s*", na=False)
+    if dirty_mask.any():
+        kb["keywords"] = kb["keywords"].apply(_sanitize_keywords)
+        dirty_count = dirty_mask.sum()
+        print(f"⚠️  Auto-fixed {dirty_count} rows with spaces around '|' in keywords column")
 
     # Backup
     if not args.dry_run:
@@ -86,8 +105,10 @@ def main():
                 continue
 
         idx = kb[mask].index[0]
-        existing = str(kb.at[idx, "keywords"])
-        new_keywords = [k.strip() for k in new_kw_raw.split(";") if k.strip()]
+        existing = _sanitize_keywords(kb.at[idx, "keywords"])
+        new_keywords = [
+            k.strip() for k in new_kw_raw.split(";") if k.strip()
+        ]
         added = []
 
         for kw in new_keywords:
@@ -96,6 +117,10 @@ def main():
                 added.append(kw)
 
         if added:
+            # 🚨 Final safety check: no spaces around pipes before writing
+            if " |" in existing or "| " in existing:
+                print(f"  ⚠️  INTERNAL ERROR: spaces around '|' detected, auto-fixing...")
+                existing = _sanitize_keywords(existing)
             if not args.dry_run:
                 kb.at[idx, "keywords"] = existing
             updated += 1
