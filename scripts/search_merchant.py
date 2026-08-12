@@ -130,7 +130,7 @@ def search(
 
     # Parse matched lines (first line is CSV header from grep output)
     # Re-read header from file
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         header_line = f.readline().strip()
 
     header = next(csv.reader(io.StringIO(header_line)))
@@ -184,8 +184,7 @@ def _fallback_scan(filepath, term, field, fuzzy, max_results, min_score):
     total = 0
     empty_cat = 0
 
-    with open(filepath, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for row in reader:
             total += 1
             merchant = (row.get("merchant_name") or "").upper()
