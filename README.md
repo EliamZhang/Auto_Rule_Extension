@@ -1,6 +1,6 @@
 # Auto Rule Extension
 
-基于 Claude Code 的智能规则维护系统，为 [finv_category_V2](https://github.com/EliamZhang/finv_category_V2) 交易分类流水线的 8 个引擎自动发现并补充分类规则。
+基于 Claude Code 的智能规则维护系统，为 [finv_category_V2](https://github.com/EliamZhang/finv_category_V2) 交易分类流水线的 9 个引擎自动发现并补充分类规则。
 
 ## 解决的问题
 
@@ -57,6 +57,7 @@
 | 300 | liability | 7 | 贷款、信用卡还款 |
 | 400 | all_other_credit | 1 | 退款、返现等杂项入账 |
 | 500 | fee | 1 | 各类费用识别 |
+| 800 | rent | 1 | 房租/租金识别 |
 | 999 | catch_all | 1 | 兜底关键词匹配 |
 
 ## 项目结构

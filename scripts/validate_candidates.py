@@ -188,6 +188,48 @@ def _check_catch_all(pattern: str, match_type: str, row: pd.Series) -> list[tupl
     return issues
 
 
+def _check_rent(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
+    """rent_engine: clean_text() → uppercase [A-Z0-9 ], keyword(全词) / regex, 最高 confidence 胜出.
+
+    Source: rent_engine/engine.py
+    """
+    issues = []
+    if match_type == "keyword":
+        if not pattern.isupper():
+            issues.append((
+                "WARNING",
+                "rent keyword 建议全大写，引擎使用 clean_text() 转大写后匹配。"
+            ))
+        if re.search(r"[^A-Z0-9 ]", pattern):
+            issues.append((
+                "ERROR",
+                f"rent keyword 含特殊字符，clean_text() 只保留 [A-Z0-9 ]。"
+            ))
+    if match_type == "regex" and re.search(r"[a-z]", pattern):
+        issues.append((
+            "WARNING",
+            "rent regex: 引擎在 clean_text() 结果上匹配（全大写），小写字母可能匹配不到。"
+        ))
+    if "category" in row.index:
+        cat = str(row.get("category", "")).strip()
+        if cat and cat != "Rent":
+            issues.append((
+                "ERROR",
+                f"rent category='{cat}' 无效，必须是 'Rent'。"
+            ))
+    if "confidence" in row.index:
+        try:
+            conf = float(row["confidence"])
+            if conf > 0.90:
+                issues.append((
+                    "WARNING",
+                    f"rent confidence={conf} 偏高，现有规则范围约 0.70-0.90。"
+                ))
+        except (ValueError, TypeError):
+            pass
+    return issues
+
+
 def _check_fee(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
     """fee_engine: normalize_text() preserves case, re.compile() no flags.
 
@@ -353,6 +395,7 @@ ENGINE_CONSTRAINT_VALIDATORS = {
     "transfer": _check_transfer,
     "catch_all": _check_catch_all,
     "fee": _check_fee,
+    "rent": _check_rent,
     "all_other_credit": _check_all_other_credit,
     "dishonour": _check_dishonour,
     "income": _check_income,

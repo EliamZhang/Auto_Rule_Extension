@@ -1,11 +1,11 @@
 ---
 name: auto-rule-extension
-description: 为 finv_category_V2 交易分类流水线的 8 个引擎自动发现并补充分类规则。用户说"补充规则"、"发现盲区"、"分析未覆盖交易"、"扩展规则库"、"/auto-rule-extension" 时触发。
+description: 为 finv_category_V2 交易分类流水线的 9 个引擎自动发现并补充分类规则。用户说"补充规则"、"发现盲区"、"分析未覆盖交易"、"扩展规则库"、"/auto-rule-extension" 时触发。
 ---
 
 # Auto Rule Extension Skill
 
-为 finv_category_V2 交易分类流水线的 8 个引擎自动发现并补充规则。
+为 finv_category_V2 交易分类流水线的 9 个引擎自动发现并补充规则。
 
 ## 语言要求（强制）
 
@@ -239,7 +239,8 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
 | **liability** | 贷款还款、信用卡还款、债务催收等 | 已被 income 分类的交易 |
 | **all_other_credit** | 退款/返现/报销/**利息**等杂项入账 | 非入账类交易 |
 | **fee** | 各类银行/账户费用 | — |
-| **catch_all** | **仅**通用描述性关键词（非商户名），**且必须是其他 7 个引擎都无法处理的** | 任何具体商户名/品牌名；能被其他引擎处理的 |
+| **rent** | 房租/租金相关交易（RENT、TENANCY、LANDLORD、REAL ESTATE 等关键词） | 已被 income/liability 分类的交易（orchestrator 已排除） |
+| **catch_all** | **仅**通用描述性关键词（非商户名），**且必须是其他 8 个引擎都无法处理的** | 任何具体商户名/品牌名；能被其他引擎处理的 |
 
 **🚨 catch_all 硬性前置检查（分配任何规则到 catch_all 前必须通过）**：
 
@@ -265,11 +266,13 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
 | **liability** | `upper().strip()` | 大写 | 多格式(全词\b/regex/条件) | counterparty 是全词，credit_card 的 keyword 列实际是 regex，home_loan 是 Format A 多字段 |
 | **all_other_credit** | 无预处理 | 不敏感(flags) | **仅 keyword** (re.escape) | **regex 模式未实现**，required_terms 被忽略，只处理入账(credit) |
 | **fee** | 仅压缩空格 | **大小写敏感** | regex 第一匹配，CSV动态加载 | category 仅两个值: `"fee"`(→"Fees") 和 `"Overdrawn"`，zero_amount_reject 机制 |
+| **rent** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，category 恒为 `"Rent"`，orchestrator 已排除 income/liability 行 |
 | **catch_all** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，confidence 建议 0.70-0.85 |
 
 **跨引擎关键交互**（来自 `orchestrator.py`）：
 - initial 的 "Financial Institutions"/"Debt Collection"/"Debt Consolidation" 在 pipeline 中被清除，由 liability 兜底
 - liability 排除已被 income 分类为 Wages/Centrelink 的行
+- rent 排除已被 income/liability 认领的行（orchestrator 层预过滤）
 - all_other_credit 可以覆盖 "External Transfers"
 - income_engine 复用 initial_engine 的 cached automaton 做 KB counterparty 查找
 - 后执行的引擎总是覆盖前面的，**不管 confidence 高低**
@@ -302,6 +305,7 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
    - 贷款/信用卡还款/催收 → liability_engine
    - 退款/返现/利息 → all_other_credit_engine
    - 费用 → fee_engine
+   - 房租/租金关键词（RENT、TENANCY、LANDLORD、REAL ESTATE 等）→ rent_engine
    - 通用消费关键词（非商户名）→ catch_all_engine
 
 5. 我有多确定不会误伤？（宁可漏判不误判）
@@ -701,6 +705,7 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
 8. **代码级匹配约束**（来自 finv_category_V2 源码分析）：
    - **transfer regex 必须用小写** — 引擎用 `text.lower()` 预处理
    - **catch_all keyword 必须是大写且仅含 `[A-Z0-9 ]`** — 引擎用 `clean_text()` 后做全词匹配
+   - **rent keyword 必须是大写且仅含 `[A-Z0-9 ]`** — 引擎用 `clean_text()` 后做全词匹配，category 恒为 `Rent`
    - **all_other_credit 只支持 keyword 模式** — regex 在代码中未实现
    - **fee 规则从 CSV 加载** — 可直接追加 CSV，pattern 大小写敏感
    - **liability counterparty 匹配是全词 `\b...\b`** — 不会子串匹配
@@ -736,6 +741,7 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
 
 - **dishonour / all_other_credit**：`rule_type, pattern, required_terms`
 - **fee**：`priority, rule_name, category, pattern, counterparty, match_type, zero_amount_reject, description`
+- **rent**：`rule_name, category, pattern, match_type, confidence`（category 恒为 `Rent`；keyword 全大写仅 `[A-Z0-9 ]`，全词匹配；regex 在 clean_text 后匹配；最高 confidence 胜出）
 - **catch_all**：`rule_name, category, pattern, match_type, confidence`
 - **income**：`pattern_group, pattern, match_type, description`
 - **liability**（多文件引擎，必须指定 `target_file`）：

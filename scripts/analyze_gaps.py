@@ -132,6 +132,7 @@ def _classify_pattern_type(
     - 'merchant': specific business name → initial_engine (merchant_kb.csv)
     - 'generic': descriptive keyword → catch_all_engine
     - 'gambling': betting/casino → transfer_engine (exclusion patterns)
+    - 'rent': rent/property keyword → rent_engine (rent_rules.csv)
     - 'ambiguous': needs Claude to decide
     """
     p = pattern_norm.upper()
@@ -141,6 +142,12 @@ def _classify_pattern_type(
     gambling_indicators = pattern_config.get("gambling_indicators", [])
     if any(ind in all_text for ind in gambling_indicators):
         return "gambling"
+
+    # ── Rent detection (category-level signal, whole-word to avoid substrings) ──
+    rent_indicators = pattern_config.get("rent_indicators", [])
+    for ind in rent_indicators:
+        if re.search(r"\b" + re.escape(str(ind).strip()) + r"\b", all_text):
+            return "rent"
 
     # ── Strong merchant signals ──
     card_purchase_prefixes = pattern_config.get("card_purchase_prefixes", [])
@@ -284,6 +291,8 @@ def analyze_gaps(
             target = "initial"
         elif pattern_type == "gambling":
             target = "transfer"
+        elif pattern_type == "rent" or illion_cat == "Rent":
+            target = "rent"
         elif pattern_type == "generic":
             target = "catch_all"
         else:

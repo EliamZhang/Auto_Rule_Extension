@@ -88,6 +88,7 @@ def get_engine_priority(engine_id: str, config: dict[str, Any] | None = None) ->
         "liability": 300,
         "all_other_credit": 400,
         "fee": 500,
+        "rent": 800,
         "catch_all": 999,
     }
     return _DEFAULT_PRIORITIES.get(engine_id, 500)

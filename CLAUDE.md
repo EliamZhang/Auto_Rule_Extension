@@ -1,6 +1,6 @@
 # Auto Rule Extension
 
-基于 Claude Code 的智能规则维护系统，为 finv_category_V2 交易分类流水线的 8 个分类引擎自动发现并补充规则。
+基于 Claude Code 的智能规则维护系统，为 finv_category_V2 交易分类流水线的 9 个分类引擎自动发现并补充规则。
 
 ## 项目目标
 
@@ -24,7 +24,7 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 
 ## 目标项目架构
 
-### finv_category_V2 的 8 个引擎
+### finv_category_V2 的 9 个引擎
 
 | 优先级 | engine_id | 规则文件 | 匹配方式 | 文本预处理 | 规则数 |
 |--------|-----------|----------|----------|-----------|--------|
@@ -35,6 +35,7 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 | 300 | liability | 8 个 CSV（多格式） | keyword(全词\b) + regex 双 tier | `upper().strip()` | ~500+ |
 | 400 | all_other_credit | `all_other_credit_rules.csv` | keyword(re.escape) 仅入账 | 无(flags) | ~30 |
 | 500 | fee | `fee_classification_rules.csv` | regex(大小写敏感,^锚定) | 仅压缩空格 | ~87 |
+| 800 | rent | `rent_rules.csv` | keyword(全词) + regex, 最高conf胜出 | `clean_text()` 大写 | ~10 |
 | 999 | catch_all | `catch_all_rules.csv` | keyword(全词) + regex, 最高conf胜出 | `clean_text()` 大写 | ~280 |
 
 ### 每个引擎的代码级规则使用详解
@@ -526,7 +527,56 @@ CSV 中 `zero_amount_reject=true` 的规则，在交易金额为 $0.00 时被撤
 
 ---
 
-#### 8. catch_all_engine (优先级 999) — 兜底关键词
+#### 8. rent_engine (优先级 800) — 房租识别
+
+**源码位置**: `rent_engine/engine.py` (183行)
+
+##### 规则加载 (`_load_rules`)
+```python
+CSV: rule_name, category, pattern, match_type, confidence
+→ list[(rule_name, category, pattern, match_type, confidence)]
+→ 按 confidence 降序排列
+```
+
+##### 文本预处理
+```python
+clean_text(value)  # 与 initial_engine 相同：大写 + 仅[A-Z0-9 ] + 压缩空格
+```
+
+##### 匹配逻辑（逐行迭代，非向量化）
+```
+对每个候选行:
+  clean_text(text) → 遍历规则（已按 confidence 降序）:
+    keyword 模式: str.find(keyword) + 全词边界检查
+      - 前后必须是空格或字符串边界（与 catch_all 相同的全词逻辑）
+    regex 模式: re.search(pattern, text)
+    → 最高 confidence 匹配胜出（不是第一个匹配！）
+```
+
+##### 与 orchestrator 的关系（重要）
+- rent 在 orchestrator 中被特殊处理：`candidates` 已排除被 `income` 或 `liability` 认领的行
+- rent **不使用** `exclude_prior_claimed`，income/liability 保护完全在 orchestrator 层完成
+
+##### 输出
+- `finv_category = "Rent"`（硬编码，不是 CSV 的 category 列）
+- `counterparty = "-"` (硬编码)
+- `classification_rule_id = rule_name`
+- `classification_reason = "category=Rent; rule=<rule>; evidence=confidence=<0.XX>"`
+- `stream_id = pd.NA`
+
+##### 对规则生成的影响
+- **keyword 是全词匹配**（经过 clean_text 的大写文本） — "RENT" 匹配 "RENT JANUARY 2024" 但不匹配 "PARENT"
+- **keyword 必须是大写且仅含 [A-Z0-9 ]** — 与 initial/catch_all 相同
+- **regex 在 clean_text 后的文本上匹配** — 不需要考虑大小写变体
+- **category 列虽存在但引擎忽略** — 输出恒为 "Rent"，CSV 中 category 列填 "Rent" 仅为保持一致性
+- **最高 confidence 胜出，不是第一匹配** — confidence 值非常重要
+- **只生成 Rent 分类的规则** — 引擎只输出 "Rent" 一个 category
+- **orchestrator 已排除 income/liability 的行** — 房租规则不会被这两个引擎的分类行触发
+- **confidence 建议范围**: 现有规则 0.75–0.90
+
+---
+
+#### 9. catch_all_engine (优先级 999) — 兜底关键词
 
 **源码位置**: `catch_all_engine/engine.py` (228行)
 
@@ -591,6 +641,16 @@ priority, rule_name, category, pattern, counterparty, match_type, zero_amount_re
 - category 仅两个值: `"fee"`（CSV中，引擎自动转为 `"Fees"`）或 `"Overdrawn"`
 - `zero_amount_reject=true` 的规则在金额为 $0.00 时被撤销
 - priority 升序排列，数字越小优先级越高
+
+#### rent_engine
+```
+rule_name, category, pattern, match_type, confidence
+```
+- keyword 在 `clean_text()` 后的文本上做**全词匹配**（`str.find` + 空格边界）
+- regex 在 `clean_text()` 后的文本上做 `re.search`
+- **最高 confidence 胜出**（不是第一匹配），confidence 降序加载
+- category 列恒为 `"Rent"`（引擎输出硬编码为 "Rent"，CSV 中的 category 仅作一致性占位）
+- confidence 建议 0.75–0.90
 
 #### catch_all_engine
 ```
@@ -705,14 +765,16 @@ merchant_name, keywords, link, category, category_source, keyword_updated_at, ca
 2. 每个引擎看到所有原始交易（candidates = original.copy()）
 3. 后面引擎的预测**行级覆盖**前面的 (finv_category + counterparty 成对替换)
 4. 特殊处理: liability_engine 的 candidates 排除已被 income 分类为 Wages/Centrelink 的行
-5. 所有引擎预测被归档到 claim_archive（用于 baseline diff 检测回归）
-6. 最终未被任何引擎认领的标记为 "unclassified"
+5. 特殊处理: rent_engine 的 candidates 排除已被 income 或 liability 认领的行
+6. 所有引擎预测被归档到 claim_archive（用于 baseline diff 检测回归）
+7. 最终未被任何引擎认领的标记为 "unclassified"
 ```
 
 **各引擎间的重要交互**（来自源码）：
 - **initial → liability/dishonour**: initial 匹配的 "Financial Institutions" 在 pipeline 中被清除，由 liability/dishonour 兜底
 - **initial → liability**: initial 匹配的 "Debt Collection"/"Debt Consolidation" 被清除，由 liability 处理
 - **income → liability**: orchestrator 在 liability 前排除 Wages/Centrelink 行
+- **income/liability → rent**: orchestrator 在 rent 前排除 income/liability 认领的行
 - **initial → income**: income_engine 复用 initial_engine 的 cached automaton 做 KB counterparty 查找
 - **transfer → all_other_credit**: all_other_credit 可覆盖 "External Transfers"（保留在 candidates 中）
 - **initial → catch_all**: catch_all 通过 `exclude_prior_claimed` 排除所有前面引擎的分类
@@ -729,11 +791,12 @@ merchant_name, keywords, link, category, category_source, keyword_updated_at, ca
 | liability | `normalize_match_text()`: `re.sub(r"\s+", " ", str(value).strip().upper())` | 大写 |
 | all_other_credit | 无特殊预处理 | 不敏感(flags) |
 | fee | `normalize_text()`: 仅压缩空格 `re.sub(r"\s+", " ", str(value)).strip()` | **大小写敏感** |
+| rent | `clean_text()` (同 initial) | 大写 |
 | catch_all | `clean_text()` (同 initial) | 大写 |
 
 **这意味着**:
 - 为 transfer 生成 regex 规则时，**必须用小写**
-- 为 catch_all/initial 生成 keyword 规则时，**必须用大写且仅 `[A-Z0-9 ]`**
+- 为 catch_all/initial/rent 生成 keyword 规则时，**必须用大写且仅 `[A-Z0-9 ]`**
 - 为 fee 生成规则时，pattern 必须与原始文本的**实际大小写完全匹配**
 
 ## 项目目录结构
@@ -747,6 +810,7 @@ D:\project\Auto_Rule_Extension\
 ├── raw/                   ← 各引擎规则 CSV 的本地副本
 │   ├── initial_rule/merchant_kb.csv
 │   ├── transfer_rule/*.csv
+│   ├── rent_rule/rent_rules.csv
 │   ├── catch_all_rule/catch_all_rules.csv
 │   └── ...
 ├── input/                 ← 数据入口（.xlsx 分类报告）
@@ -807,6 +871,7 @@ D:\project\Auto_Rule_Extension\
 | liability | 混合（取决于子模块） | 多子模块 pipeline | 各模块独立排序 |
 | all_other_credit | 原始 text（case=False） | `str.contains` **仅 keyword** | OR |
 | fee | 空格归一化，**保留原始大小写** | `re.search` | 先匹配先得（规则列表顺序） |
+| rent | `clean_text()` 大写 [A-Z0-9] | `str.find` + 全词 / `re.search` | 最高 confidence 优先 |
 | catch_all | `clean_text()` 大写 [A-Z0-9] | `str.find` + 全词 / `re.search` | 最高 confidence 优先 |
 
 ⚠️ 生成规则时必须注意：
