@@ -34,4 +34,7 @@ raw/**/*.bak
 # Monitor artifacts
 scripts/.monitor/
 
+# Label compare reports (generated per run)
+category_difference_report*.xlsx
+
 

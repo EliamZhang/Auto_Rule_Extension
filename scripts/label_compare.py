@@ -7,8 +7,11 @@ detail-sheet logic from ``label_compare.py`` while changing the core report:
 1. Adds per-category Illion and finv coverage rates after the count columns.
 2. Adds Venn-like category metrics: intersection count, each side's exclusive
    count, and the three shares over the category union.
-3. Sorts the category comparison by Illion-side difference rate (difference
-   degree) rather than Illion-side difference count.
+3. Sorts the category comparison by intersection share over the union
+   (ascending, worst agreement first) rather than difference count or rate.
+4. Adds a business-group clustering view (income / expense / loan / transfer,
+   plus an unclassified bucket) with per-group coverage, agreement and
+   cross-group difference rates on a dedicated sheet.
 
 Illion is not treated as a golden standard. The directional difference rate is
 only a diagnostic view relative to the Illion-labelled population; the summary
@@ -22,7 +25,7 @@ import argparse
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -85,6 +88,35 @@ DEFAULT_KEY_CATEGORY_KEYWORDS = (
     "financial service",
 )
 
+# =====================================================================
+# 业务大类聚类：把细分 Category 归并到收入/支出/贷款/转账四大类，
+# 用于从大类层面观察覆盖率与一致率（详见 compute_group_comparison）。
+# =====================================================================
+
+# 大类展示顺序（汇总表与组×组矩阵共用；配置中的其他组按配置顺序追加）。
+DEFAULT_GROUP_LABELS = ("收入类", "支出类", "贷款类", "转账类")
+
+# 默认聚类关键词：Category 名经 normalize_scalar 标准化后按子串匹配，
+# 字典顺序即判定优先级——贷款类术语最具体放最前，支出类最后兜底。
+# 未命中任何关键词的 Category 归入 DEFAULT_UNGROUPED_LABEL。
+# 可通过 --group-json 提供整体替换。
+DEFAULT_CATEGORY_GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "贷款类": ("loan", "credit card", "repayment", "sacc", "overdrawn", "debt", "loc"),
+    "转账类": ("transfer", "osko", "bpay"),
+    "收入类": (
+        "wage", "salary", "centrelink", "income", "all other credit",
+        "refund", "deposit",
+    ),
+    "支出类": (
+        "dining", "grocer", "gambling", "automotive", "transport", "fee",
+        "retail", "subscription", "gym", "department", "travel", "rent",
+        "telecom", "health", "util", "entertainment", "insurance",
+        "personal care", "home improvement", "education", "pet",
+        "information", "donation", "dishonour",
+    ),
+}
+DEFAULT_UNGROUPED_LABEL = "未分类"
+
 # 建议优先级规则（保持简单、可解释）：
 # P1：差异数位于正差异 Category 的前 25%，且差异贡献率 >= 5% 或差异率 >= 30%；
 #     关键 Category 达到高差异数或高贡献率时也进入 P1。
@@ -106,6 +138,7 @@ DEFAULT_DETAIL_COLUMNS = [
     "bank_account_id",
     "transaction_date",
     "amount",
+    "balance",
     "dr_cr",
     "text",
     "category",
@@ -123,12 +156,11 @@ DETAIL_PRIORITY_ORDER = ["P1", "P2", "P3"]
 
 # 第三个 Sheet 默认隐藏的技术/追溯字段。
 # 字段仍保留在 Excel 中，需要时可以手动取消隐藏。
+# job_id 和 bank_account_id 需要人工排查时直接可见，默认不隐藏。
 DEFAULT_HIDDEN_DETAIL_COLUMNS = {
     "classification_engine",
     "classification_rule_id",
     "classification_status",
-    "job_id",
-    "bank_account_id",
     "sample_datetime",
 }
 
@@ -188,6 +220,11 @@ class ReportConfig:
     top_n: int = 20
     max_detail_rows: int = EXCEL_MAX_DATA_ROWS
     detail_columns: tuple[str, ...] = tuple(DEFAULT_DETAIL_COLUMNS)
+    # 业务大类聚类：Category 名 → 大类；未命中归入 ungrouped_label。
+    group_keywords: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(DEFAULT_CATEGORY_GROUP_KEYWORDS)
+    )
+    ungrouped_label: str = DEFAULT_UNGROUPED_LABEL
 
     @property
     def required_columns(self) -> list[str]:
@@ -1209,6 +1246,7 @@ def build_difference_details(
     evidence_columns = [
         "transaction_date",
         config.amount_column,
+        "balance",
         "dr_cr",
         "text",
         "third_party",
@@ -1377,7 +1415,7 @@ def format_dataframe_region(ws, header_row: int, data_rows: int) -> None:
                 cell.number_format = "#,##0;[Red]-#,##0"
             elif any(token in h for token in [
                 "数量", "总数", "差异数", "用户数", "申请数", "变动数",
-                "分子", "分母", "排名", "count",
+                "分子", "分母", "排名", "count", "有值",
             ]):
                 cell.number_format = "#,##0"
 
@@ -1751,6 +1789,101 @@ def write_heatmap_sheet(
         "主要交易方向": 20,
         "排查建议": 48,
     }, max_width=48)
+
+
+def write_group_sheet(
+    writer: pd.ExcelWriter,
+    group_comparison: pd.DataFrame,
+    group_matrix: pd.DataFrame,
+    config: ReportConfig,
+) -> None:
+    """生成业务大类聚类对比 Sheet：大类汇总表 + 组×组流向矩阵。"""
+    sheet_name = "02_业务聚类对比"
+    ws = writer.book.create_sheet(sheet_name)
+    r = config.reference_label
+    c = config.candidate_label
+    end_col = max(8, len(group_comparison.columns), group_matrix.shape[1] + 1)
+    subtitle = (
+        f"按业务大类（收入/支出/贷款/转账，未命中的归入「{config.ungrouped_label}」）汇总；"
+        f"一致率以 {r} 侧为分母；矩阵对角线为大类一致（仍可能包含 Category 不同的行）"
+    )
+    style_title(ws, "业务大类聚类对比", subtitle, end_col=end_col)
+    configure_sheet_view(ws, freeze_panes="A5")
+
+    # Section 1: 大类聚类汇总表
+    row = 4
+    style_section_title(
+        ws,
+        row,
+        "1. 大类聚类汇总（覆盖率 / 一致率 / 跨组差异）",
+        len(group_comparison.columns),
+    )
+    header_row = row + 1
+    group_comparison.to_excel(
+        writer, sheet_name=sheet_name, index=False, startrow=header_row - 1
+    )
+    style_header(ws, header_row)
+    format_dataframe_region(ws, header_row, len(group_comparison))
+    apply_rate_color_scale(
+        ws,
+        header_row,
+        len(group_comparison),
+        [f"{r}覆盖率", f"{c}覆盖率", "大类一致率", "精确一致率"],
+    )
+    apply_difference_rate_color_scale(
+        ws,
+        header_row,
+        len(group_comparison),
+        ["组内类别不一致率", "跨组差异率"],
+    )
+    apply_count_data_bar(
+        ws,
+        header_row,
+        len(group_comparison),
+        [
+            "双方同大类数量",
+            "精确一致数量",
+            "组内类别不一致数量",
+            "跨组流出数量",
+            f"仅{r}有值",
+            f"仅{c}有值",
+        ],
+    )
+
+    # 首行「合计」加蓝底，未分类行加灰底，便于快速定位。
+    for i, value in enumerate(group_comparison["业务大类"]):
+        excel_row = header_row + 1 + i
+        fill_color = LIGHT_BLUE if i == 0 else (
+            LIGHT_GRAY if value == config.ungrouped_label else None
+        )
+        if fill_color:
+            for col in range(1, len(group_comparison.columns) + 1):
+                ws.cell(excel_row, col).fill = PatternFill("solid", fgColor=fill_color)
+
+    # Section 2: 组×组流向矩阵
+    matrix_row = header_row + len(group_comparison) + 2
+    write_matrix_section(
+        writer,
+        ws,
+        sheet_name,
+        group_matrix,
+        matrix_row,
+        (
+            f"2. 组×组流向矩阵（行={r} 大类，列={c} 大类；"
+            f"对角线为大类一致，含「{config.ungrouped_label}」）"
+        ),
+        f"{r} 大类 \\ {c} 大类",
+        percent=False,
+        mode="full_count",
+    )
+
+    ws.sheet_properties.tabColor = GREEN
+    set_widths(ws, {
+        "业务大类": 14,
+        "成员数量": 12,
+        "成员Category": 52,
+        "主要跨组流向": 26,
+    }, max_width=52)
 
 
 def style_detail_header(ws, row: int, config: ReportConfig) -> None:
@@ -2218,6 +2351,21 @@ def print_summary(summary: Mapping[str, Any], config: ReportConfig) -> None:
     print(f"All differences: {summary['all_difference_count']:,}")
 
 
+def print_group_summary(group_comparison: pd.DataFrame, config: ReportConfig) -> None:
+    """控制台打印业务大类聚类摘要（覆盖率 / 大类一致率 / 精确一致率）。"""
+    r = config.reference_label
+    c = config.candidate_label
+    print("\n--- 业务大类聚类 ---")
+    for _, row in group_comparison.iterrows():
+        name = str(row["业务大类"])
+        print(
+            f"{name:<6} {r} {int(row[f'{r}数量']):>7,} ({row[f'{r}覆盖率']:>6.1%}) | "
+            f"{c} {int(row[f'{c}数量']):>7,} ({row[f'{c}覆盖率']:>6.1%}) | "
+            f"大类一致 {row['大类一致率']:>6.1%} | 精确一致 {row['精确一致率']:>6.1%} | "
+            f"跨组差异 {row['跨组差异率']:>6.1%}"
+        )
+
+
 # =====================================================================
 # CLI
 # =====================================================================
@@ -2246,6 +2394,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="关键Category关键词，使用英文逗号分隔；标准化后按包含关系匹配",
     )
     parser.add_argument("--alias-json", default=None, help="可选 Category alias JSON")
+    parser.add_argument(
+        "--group-json",
+        default=None,
+        help="可选 业务大类聚类 JSON：{\"组名\": [\"关键词\",...]}；提供时整体替换内置默认聚类（收入/支出/贷款/转账）",
+    )
     parser.add_argument("--top-n", type=int, default=20, help="核心页展示的差异流向 Top N")
     parser.add_argument(
         "--max-detail-rows",
@@ -2288,6 +2441,9 @@ def build_config(args: argparse.Namespace) -> ReportConfig:
         amount_column=args.amount_column,
         key_category_keywords=key_category_keywords,
         alias_json=Path(args.alias_json).expanduser().resolve() if args.alias_json else None,
+        group_keywords=load_group_keywords(
+            Path(args.group_json).expanduser().resolve() if args.group_json else None
+        ),
         top_n=args.top_n,
         max_detail_rows=args.max_detail_rows,
         detail_columns=detail_columns,
@@ -2471,7 +2627,6 @@ def compute_category_comparison_v2(
     intersection_share_col = "交集占比（并集）"
     ref_only_share_col = f"{r}独有占比（并集）"
     cand_only_share_col = f"{c}独有占比（并集）"
-    difference_rate_col = f"{r}侧差异率"
     total_rows = len(df)
 
     original_columns = list(result.columns)
@@ -2522,12 +2677,12 @@ def compute_category_comparison_v2(
             )
     result = result[ordered_columns]
 
-    # Difference degree = Illion-side difference rate, not absolute count.
-    # Count remains a secondary key so high-rate categories with more evidence
-    # appear first when rates are tied.
+    # Intersection share over the union: low share (worst agreement) first.
+    # Union count remains a secondary key so categories with more evidence
+    # appear first when shares are tied.
     result = result.sort_values(
-        [difference_rate_col, f"{r}侧差异数", ref_count_col, "Category"],
-        ascending=[False, False, False, True],
+        [intersection_share_col, union_count_col, "Category"],
+        ascending=[True, False, True],
         kind="stable",
         na_position="last",
     ).reset_index(drop=True)
@@ -2541,6 +2696,226 @@ def compute_category_comparison_v2(
         )
         result["累计差异贡献率"] = result["差异贡献率"].cumsum().clip(upper=1.0)
     return result
+
+
+# =====================================================================
+# Category business-group clustering (收入/支出/贷款/转账 + 未分类)
+# =====================================================================
+
+def load_group_keywords(path: Path | None) -> dict[str, tuple[str, ...]]:
+    """加载业务大类聚类 JSON：{"组名": ["关键词", ...]}。
+
+    提供时整体替换内置默认聚类；关键词与 Category 名一样会经过
+    normalize_scalar 标准化后再做子串匹配。
+    """
+    if path is None:
+        return dict(DEFAULT_CATEGORY_GROUP_KEYWORDS)
+    if not path.exists():
+        raise FileNotFoundError(f"Group JSON 不存在: {path}")
+
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("Group JSON 顶层必须是对象(dict)。")
+
+    groups: dict[str, tuple[str, ...]] = {}
+    for group_name, keywords in payload.items():
+        if isinstance(keywords, str):
+            items = [kw.strip() for kw in keywords.split(",") if kw.strip()]
+        elif isinstance(keywords, list):
+            items = [str(kw).strip() for kw in keywords if str(kw).strip()]
+        else:
+            raise ValueError(
+                f"Group JSON 中 '{group_name}' 的关键词必须是列表或逗号分隔字符串。"
+            )
+        if items:
+            groups[str(group_name)] = tuple(items)
+    return groups
+
+
+def group_display_order(config: ReportConfig) -> list[str]:
+    """汇总表与矩阵共用的大类顺序：默认四类 → 配置中的其他类 → 未分类。"""
+    configured = list(config.group_keywords.keys())
+    ordered = [group for group in DEFAULT_GROUP_LABELS if group in configured]
+    ordered += [group for group in configured if group not in ordered]
+    ordered += [config.ungrouped_label]
+    seen: list[str] = []
+    for group in ordered:
+        if group not in seen:
+            seen.append(group)
+    return seen
+
+
+def build_category_group_lookup(
+    group_keywords: Mapping[str, Sequence[str]],
+    categories: Sequence[str],
+) -> dict[str, str]:
+    """为每个标准化 Category key 分配业务大类；无匹配的 key 不出现在结果中。
+
+    关键词与 Category 名都经 normalize_scalar 标准化后做子串匹配；
+    按 group_keywords 的插入顺序判断，首个命中的组胜出（调用方应把
+    更具体的组放在前面）。
+    """
+    normalized_groups: list[tuple[str, tuple[str, ...]]] = []
+    for group_name, keywords in group_keywords.items():
+        normalized: list[str] = []
+        for keyword in keywords:
+            key = normalize_scalar(keyword)
+            if not pd.isna(key):
+                normalized.append(str(key))
+        if normalized:
+            normalized_groups.append((group_name, tuple(normalized)))
+
+    lookup: dict[str, str] = {}
+    for category in categories:
+        category_key = normalize_scalar(category)
+        if pd.isna(category_key):
+            continue
+        text = str(category_key)
+        for group_name, keywords in normalized_groups:
+            if any(keyword in text for keyword in keywords):
+                lookup[text] = group_name
+                break
+    return lookup
+
+
+def assign_group_columns(df: pd.DataFrame, config: ReportConfig) -> None:
+    """给 prepared df 添加 __ref_group / __cand_group 业务大类列（原地修改）。"""
+    all_categories = sorted(
+        set(df["__ref_key"].dropna().astype(str))
+        | set(df["__cand_key"].dropna().astype(str))
+    )
+    lookup = build_category_group_lookup(config.group_keywords, all_categories)
+    df["__ref_group"] = (
+        df["__ref_key"].map(lookup).fillna(config.ungrouped_label).astype("string")
+    )
+    df["__cand_group"] = (
+        df["__cand_key"].map(lookup).fillna(config.ungrouped_label).astype("string")
+    )
+
+
+def compute_group_comparison(
+    df: pd.DataFrame,
+    display_map: Mapping[str, str],
+    config: ReportConfig,
+) -> pd.DataFrame:
+    """聚类到业务大类后，按 reference 侧方向统计每个大类的覆盖与一致情况。
+
+    口径（与逐 Category 表一致的方向性口径，reference 侧为分母）：
+    - 大类一致率 = 双方落入同一大类 / reference 侧属于该大类；
+    - 精确一致率 = 双方 Category 完全相同 / reference 侧属于该大类；
+    - 组内类别不一致 = 双方同大类但 Category 不同；
+    - 跨组差异率 = reference 在该大类、finv 在其他大类 / reference 侧属于该大类。
+
+    首行为「合计」（全部交易，含未分类行），其后为各大类，未分类最后。
+    """
+    n = len(df)
+    status = df["__status"].astype("string")
+    exact = status.isin(["exact_match", "normalized_match"])
+    ref_has = df["__ref_key"].notna()
+    cand_has = df["__cand_key"].notna()
+    same_group = ref_has & cand_has & df["__ref_group"].eq(df["__cand_group"])
+    r = config.reference_label
+    c = config.candidate_label
+
+    group_order = group_display_order(config)
+    group_keys = {
+        group: sorted(
+            set(df.loc[df["__ref_group"].eq(group), "__ref_key"].dropna().astype(str))
+            | set(df.loc[df["__cand_group"].eq(group), "__cand_key"].dropna().astype(str))
+        )
+        for group in group_order
+    }
+    all_keys = sorted(
+        set(df["__ref_key"].dropna().astype(str))
+        | set(df["__cand_key"].dropna().astype(str))
+    )
+
+    def build_row(group_name: str | None) -> dict[str, Any]:
+        if group_name is None:
+            ref_in = pd.Series(True, index=df.index)
+            cand_in = pd.Series(True, index=df.index)
+            member_keys = all_keys
+        else:
+            ref_in = df["__ref_group"].eq(group_name)
+            cand_in = df["__cand_group"].eq(group_name)
+            member_keys = group_keys.get(group_name, [])
+
+        same_g = same_group & ref_in
+        exact_g = same_g & exact
+        diff_cat_g = same_g & ~exact
+        ref_only = ref_in & ref_has & ~cand_has
+        cand_only = cand_in & cand_has & ~ref_has
+        # 跨组流向 = 双方都有值但落入不同大类（ref 侧属于本组）。
+        cross = ref_in & ref_has & cand_has & ~same_group
+
+        ref_count = int(ref_in.sum())
+        cand_count = int(cand_in.sum())
+        cross_count = int(cross.sum())
+
+        return {
+            "业务大类": group_name or "合计",
+            "成员数量": len(member_keys),
+            "成员Category": (
+                "; ".join(display_map.get(key, key) for key in member_keys) or "-"
+            ),
+            f"{r}数量": ref_count,
+            f"{r}覆盖率": safe_div(ref_count, n),
+            f"{c}数量": cand_count,
+            f"{c}覆盖率": safe_div(cand_count, n),
+            "覆盖率差": safe_div(cand_count, n) - safe_div(ref_count, n),
+            "双方同大类数量": int(same_g.sum()),
+            "大类一致率": safe_div(same_g.sum(), ref_count),
+            "精确一致数量": int(exact_g.sum()),
+            "精确一致率": safe_div(exact_g.sum(), ref_count),
+            "组内类别不一致数量": int(diff_cat_g.sum()),
+            "组内类别不一致率": safe_div(diff_cat_g.sum(), ref_count),
+            "跨组流出数量": cross_count,
+            "跨组差异率": safe_div(cross_count, ref_count),
+            f"仅{r}有值": int(ref_only.sum()),
+            f"仅{c}有值": int(cand_only.sum()),
+            "主要跨组流向": top_category_text(df.loc[cross, "__cand_group"]),
+        }
+
+    rows = [build_row(None)] + [build_row(group) for group in group_order]
+    columns = [
+        "业务大类", "成员数量", "成员Category",
+        f"{r}数量", f"{r}覆盖率",
+        f"{c}数量", f"{c}覆盖率", "覆盖率差",
+        "双方同大类数量", "大类一致率",
+        "精确一致数量", "精确一致率",
+        "组内类别不一致数量", "组内类别不一致率",
+        "跨组流出数量", "跨组差异率",
+        f"仅{r}有值", f"仅{c}有值",
+        "主要跨组流向",
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def compute_group_matrix(df: pd.DataFrame, config: ReportConfig) -> pd.DataFrame:
+    """组×组流向矩阵：行 = reference 大类，列 = finv 大类（含未分类）。
+
+    对角线为大类一致（其中仍可能包含 Category 不同的行），
+    非对角线为跨组差异；两侧都无分类的行落在「未分类 × 未分类」。
+    """
+    order = group_display_order(config)
+    matrix = pd.crosstab(
+        df["__ref_group"], df["__cand_group"], dropna=False
+    ).astype(int)
+    return matrix.reindex(index=order, columns=order, fill_value=0)
+
+
+def compute_group_views(
+    df: pd.DataFrame,
+    display_map: Mapping[str, str],
+    config: ReportConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """添加业务大类列并计算聚类汇总表与组×组流向矩阵。"""
+    assign_group_columns(df, config)
+    return (
+        compute_group_comparison(df, display_map, config),
+        compute_group_matrix(df, config),
+    )
 
 
 def build_core_display_category_comparison(
@@ -2625,7 +3000,7 @@ def write_core_sheet_v2(
     for row in range(summary_header_row, summary_header_row + len(summary_table) + 1):
         ws.cell(row, 6).value = None
     ws.cell(category_section_row, 1).value = (
-        f"2. 逐 Category 差异与优化优先级（按{config.reference_label}侧差异率/差异程度降序）"
+        "2. 逐 Category 差异与优化优先级（按交集占比（并集）升序）"
     )
 
     # Add rate color scales for coverage and Venn-share fields.
@@ -2694,6 +3069,8 @@ def write_report_v2(
     difference_row_pct_matrix: pd.DataFrame,
     application_matrix: pd.DataFrame,
     details: pd.DataFrame,
+    group_comparison: pd.DataFrame,
+    group_matrix: pd.DataFrame,
     summary: dict | None = None,
     prepared_df: pd.DataFrame | None = None,
 ) -> bool:
@@ -2725,6 +3102,7 @@ def write_report_v2(
             application_matrix,
             config,
         )
+        write_group_sheet(writer, group_comparison, group_matrix, config)
         truncated = write_detail_sheet(writer, details, config)
 
         # 04_模型监控 sheet
@@ -2771,6 +3149,9 @@ def main(argv: list[str] | None = None) -> None:
         prepared_df, category_comparison, config
     )
 
+    print("      Clustering categories into business groups...")
+    group_comparison, group_matrix = compute_group_views(prepared_df, display_map, config)
+
     print("[5/6] Building difference details...")
     details = build_difference_details(prepared_df, category_comparison, config)
 
@@ -2785,10 +3166,13 @@ def main(argv: list[str] | None = None) -> None:
         difference_row_pct_matrix,
         application_matrix,
         details,
+        group_comparison,
+        group_matrix,
         summary=summary,
         prepared_df=prepared_df,
     )
     print_summary(summary, config)
+    print_group_summary(group_comparison, config)
     if truncated:
         print(
             f"Warning: difference details were truncated to "

@@ -1,106 +1,170 @@
-pattern_group,pattern,match_type,description
-strong_wage,\bSALARY\b,regex,"Explicit SALARY mention"
-strong_wage,\bPAYROLL\b,regex,"Explicit PAYROLL mention"
-strong_wage,\bPAY\s*ROLL\b,regex,"PAY ROLL variant"
-strong_wage,\bWAGES?\b,regex,"WAGE or WAGES"
-strong_wage,\bPAYSLIP\b,regex,"PAYSLIP mention"
-strong_wage,\bPAYRUN\b,regex,"PAYRUN mention"
-strong_wage,\bEMPLOYER\b,regex,"EMPLOYER mention"
-strong_wage,\bSTAFF\s*PAY\b,regex,"STAFF PAY"
-strong_wage,\bEFT\s*SALARY\b,regex,"EFT SALARY"
-strong_wage,\bDEPOSIT\s*SALARY\b,regex,"DEPOSIT SALARY"
-medium_income,\bDIRECT\s*CREDIT\b,regex,"DIRECT CREDIT"
-medium_income,\bDIR\s*CREDIT\b,regex,"DIR CREDIT"
-medium_income,\bDEPOSIT[-\s]*SALARY\b,regex,"DEPOSIT-SALARY"
-medium_income,\bEFT\s*DEP\b,regex,"EFT DEP"
-medium_income,\bDIRECT\s*DEP(?:OSIT)?\b,regex,"DIRECT DEP/DEPOSIT"
-repeat_employer_like,\bPAY\-PACK\b,regex,"PAY-PACK"
-repeat_employer_like,\bINTER[-\s]*BANK\s*CREDIT\b,regex,"INTER-BANK CREDIT"
-repeat_employer_like,\bPAY\s+FOR\b,regex,"PAY FOR"
-repeat_employer_like,\bDEPOSIT\s+ONLINE\b.*\bPYMT\b,regex,"DEPOSIT ONLINE ... PYMT"
-repeat_employer_like,\bDEPOSIT\b.*\bPAY\b,regex,"DEPOSIT ... PAY"
-repeat_employer_like_exclusion,\bREPAYMENT\b,regex,"REPAYMENT exclusion"
-repeat_employer_like_exclusion,\bPAYPAL\b,regex,"PAYPAL exclusion"
-repeat_employer_like_exclusion,\bJOB\s*SEEKER\b,regex,"JOB SEEKER exclusion"
-repeat_employer_like_exclusion,\bJOBSEEKER\b,regex,"JOBSEEKER exclusion"
-repeat_employer_like_exclusion,\bFAMILY\s*PAYMENT\b,regex,"FAMILY PAYMENT exclusion"
-repeat_employer_like_exclusion,\bMAXXIA\b,regex,"MAXXIA exclusion"
-repeat_employer_like_exclusion,\bCLAIMS?\b,regex,"CLAIM/CLAIMS exclusion"
-repeat_employer_like_exclusion,\bMERCHANT\s*SETTLEMENT\b,regex,"MERCHANT SETTLEMENT exclusion"
-repeat_employer_like_exclusion,\bDISBURSEMENT\b,regex,"DISBURSEMENT exclusion"
-repeat_employer_like_exclusion,\bINVEST(?:MENT)?\b,regex,"INVEST/INVESTMENT exclusion"
-salary_packaging,\bSALARY\s*PACKAGING\b,regex,"SALARY PACKAGING"
-salary_packaging,\bSALARY\s*PACKAGE\b,regex,"SALARY PACKAGE"
-salary_packaging,\bACCESS\s*PAY\b,regex,"ACCESS PAY"
-salary_packaging,\bACCESSPAY\b,regex,"ACCESSPAY"
-salary_packaging,\bSALARY\s*SACRIFICE\b,regex,"SALARY SACRIFICE"
-salary_packaging,\bEMPLOYER\s*BENEFIT\b,regex,"EMPLOYER BENEFIT"
-centrelink,\bCENTRE\s*LINK\b,regex,"CENTRE LINK variant"
-centrelink,\bCENTRELINK\b,regex,"CENTRELINK"
-centrelink,\bCTRLINK\b,regex,"CTRLINK abbreviation"
-centrelink,\bCTR\s*LINK\b,regex,"CTR LINK variant"
-centrelink,\bSERVICES\s*AUSTRALIA\b,regex,"SERVICES AUSTRALIA"
-centrelink,\bAUS\s*GOV\b,regex,"AUS GOV"
-centrelink,\bAUSTRALIAN\s*GOV(?:ERNMENT)?\b,regex,"AUSTRALIAN GOVERNMENT"
-centrelink,\bFAMILY\s*ALLOWANCE\b,regex,"FAMILY ALLOWANCE"
-centrelink,\bFAMILY\s*PAYMENT\b,regex,"FAMILY PAYMENT"
-centrelink,\bPENSION\b,regex,"PENSION"
-centrelink,\bYOUTH\s*ALLOWANCE\b,regex,"YOUTH ALLOWANCE"
-centrelink,\bJOB\s*SEEKER\b,regex,"JOB SEEKER"
-centrelink,\bJOBSEEKER\b,regex,"JOBSEEKER"
-centrelink,\bPARENTING\s*PAYMENT\b,regex,"PARENTING PAYMENT"
-centrelink,\bCARER\s*PAYMENT\b,regex,"CARER PAYMENT"
-centrelink,\bDISABILITY\s*SUPPORT\b,regex,"DISABILITY SUPPORT"
-self_employed_gig,\bUBER\b,regex,"UBER"
-self_employed_gig,\bUBER\s*PARTNER\b,regex,"UBER PARTNER"
-self_employed_gig,\bDOOR\s*DASH\b,regex,"DOOR DASH"
-self_employed_gig,\bDOORDASH\b,regex,"DOORDASH"
-self_employed_gig,\bMENULOG\b,regex,"MENULOG"
-self_employed_gig,\bDELIVEROO\b,regex,"DELIVEROO"
-self_employed_gig,\bAIRTASKER\b,regex,"AIRTASKER"
-self_employed_gig,\bPAYMENT\s*FOR\s*SERVICES?\b,regex,"PAYMENT FOR SERVICE(S)"
-self_employed_gig,\bINVOICE\b,regex,"INVOICE"
-self_employed_gig,\bCONTRACTOR\b,regex,"CONTRACTOR"
-self_employed_gig,\bBUSINESS\s*PAYMENT\b,regex,"BUSINESS PAYMENT"
-self_employed_gig,\bBUSINESS\s*INCOME\b,regex,"BUSINESS INCOME"
-self_employed_gig,\bSETTLEMENT\b,regex,"SETTLEMENT"
-self_employed_gig,\bSTRIPE\b,regex,"STRIPE"
-self_employed_gig,\bSQUARE\b,regex,"SQUARE"
-self_employed_gig,\bPAYPAL\b,regex,"PAYPAL"
-self_employed_gig,\bSHOPIFY\b,regex,"SHOPIFY"
-wage_advance,\bBEFOREPAY\b,regex,"BEFOREPAY"
-wage_advance,\bMYPAYNOW\b,regex,"MYPAYNOW"
-wage_advance,\bWAGETAP\b,regex,"WAGETAP"
-wage_advance,\bSTEPPAY\b,regex,"STEPPAY"
-wage_advance,\bPRESS\s*PAY\b,regex,"PRESS PAY"
-wage_advance,\bPRESSPAY\b,regex,"PRESSPAY"
-wage_advance,\bWAGE\s*PAY\b,regex,"WAGE PAY"
-wage_advance,\bWAGEPAY\b,regex,"WAGEPAY"
-return_like,\bRETURN\b,regex,"RETURN"
-return_like,\bVALUE\s*DATE\b,regex,"VALUE DATE"
-return_like,\bDISHONOU?R(?:ED)?\b,regex,"DISHONOUR/DISHONOURED"
-return_like,\bREVERSAL\s+OF\s+DEBIT\b,regex,"REVERSAL OF DEBIT"
-hard_negative,\bINTERNAL\s*TRANSFER\b,regex,"INTERNAL TRANSFER"
-hard_negative,\bLINKED\s*ACC\b,regex,"LINKED ACC"
-hard_negative,\bREFUND\b,regex,"REFUND"
-hard_negative,\bREVERSAL\b,regex,"REVERSAL"
-hard_negative,\bADJUSTMENT\b,regex,"ADJUSTMENT"
-hard_negative,\bREBATE\b,regex,"REBATE"
-hard_negative,\bCASHBACK\b,regex,"CASHBACK"
-hard_negative,\bLOAN\b,regex,"LOAN"
-hard_negative,\bADVANCE\b,regex,"ADVANCE"
-hard_negative,\bCENTRE\s*LINK\b,regex,"CENTRE LINK"
-hard_negative,\bCENTRELINK\b,regex,"CENTRELINK"
-hard_negative,\bCTRLINK\b,regex,"CTRLINK"
-hard_negative,\bSERVICES\s*AUSTRALIA\b,regex,"SERVICES AUSTRALIA"
-hard_negative,\bATO\b,regex,"ATO"
-hard_negative,\bTAX\b,regex,"TAX"
-hard_negative,\bINTEREST\b,regex,"INTEREST"
-hard_negative,\bDIVIDEND\b,regex,"DIVIDEND"
-hard_negative,\bBNPL\b,regex,"BNPL"
-hard_negative,\bZIP\b,regex,"ZIP"
-hard_negative,\bAFTERPAY\b,regex,"AFTERPAY"
-hard_negative,\bWITHDRAWAL\b,regex,"WITHDRAWAL"
-soft_negative,\bTRANSFER\b,regex,"TRANSFER"
-soft_negative,\bOSKO\b,regex,"OSKO"
-gig_exclusion_extra,\bLOAN\s*DEPOSIT\b,regex,"LOAN DEPOSIT exclusion for gig"
+﻿pattern_group,pattern,match_type,description
+strong_wage,\bSALARY\b,regex,Explicit SALARY mention
+strong_wage,\bPAYROLL\b,regex,Explicit PAYROLL mention
+strong_wage,\bPAY\s*ROLL\b,regex,PAY ROLL variant
+strong_wage,\bWAGES?\b,regex,WAGE or WAGES
+strong_wage,\bPAYSLIP\b,regex,PAYSLIP mention
+strong_wage,\bPAYRUN\b,regex,PAYRUN mention
+strong_wage,\bEMPLOYER\b,regex,EMPLOYER mention
+strong_wage,\bSTAFF\s*PAY\b,regex,STAFF PAY
+strong_wage,\bEFT\s*SALARY\b,regex,EFT SALARY
+strong_wage,\bDEPOSIT\s*SALARY\b,regex,DEPOSIT SALARY
+strong_wage,\bHUMANFORCE\b,regex,Humanforce payroll platform deposit
+strong_wage,\bTHRIVE\s*PAY\b,regex,Humanforce Thrive Pay earnings deposit
+strong_wage,\bPAY\s*INCOME\b,regex,PAY INCOME payroll text
+strong_wage,\bPAY\s*CHEQUE\b,regex,PAY CHEQUE transfer payroll
+strong_wage,\bWEEKLY\s*PAY\b,regex,WEEKLY PAY transfer payroll
+strong_wage,\bFAST\s*PYMT\s*IN\b,regex,CBA FAST PYMT IN payroll deposit
+strong_wage,\bPAY\s*CREDIT\b,regex,PAY CREDIT payroll text
+medium_income,\bDIRECT\s*CREDIT\b,regex,DIRECT CREDIT
+medium_income,\bDIR\s*CREDIT\b,regex,DIR CREDIT
+medium_income,\bDEPOSIT[-\s]*SALARY\b,regex,DEPOSIT-SALARY
+medium_income,\bEFT\s*DEP\b,regex,EFT DEP
+medium_income,\bDIRECT\s*DEP(?:OSIT)?\b,regex,DIRECT DEP/DEPOSIT
+repeat_employer_like,\bPAY\-PACK\b,regex,PAY-PACK
+repeat_employer_like,\bINTER[-\s]*BANK\s*CREDIT\b,regex,INTER-BANK CREDIT
+repeat_employer_like,\bPAY\s+FOR\b,regex,PAY FOR
+repeat_employer_like,\bDEPOSIT\s+ONLINE\b.*\bPYMT\b,regex,DEPOSIT ONLINE ... PYMT
+repeat_employer_like,\bDEPOSIT\b.*\bPAY\b,regex,DEPOSIT ... PAY
+repeat_employer_like_exclusion,\bREPAYMENT\b,regex,REPAYMENT exclusion
+repeat_employer_like_exclusion,\bPAYPAL\b,regex,PAYPAL exclusion
+repeat_employer_like_exclusion,\bJOB\s*SEEKER\b,regex,JOB SEEKER exclusion
+repeat_employer_like_exclusion,\bJOBSEEKER\b,regex,JOBSEEKER exclusion
+repeat_employer_like_exclusion,\bFAMILY\s*PAYMENT\b,regex,FAMILY PAYMENT exclusion
+repeat_employer_like_exclusion,\bMAXXIA\b,regex,MAXXIA exclusion
+repeat_employer_like_exclusion,\bCLAIMS?\b,regex,CLAIM/CLAIMS exclusion
+repeat_employer_like_exclusion,\bMERCHANT\s*SETTLEMENT\b,regex,MERCHANT SETTLEMENT exclusion
+repeat_employer_like_exclusion,\bDISBURSEMENT\b,regex,DISBURSEMENT exclusion
+repeat_employer_like_exclusion,\bINVEST(?:MENT)?\b,regex,INVEST/INVESTMENT exclusion
+salary_packaging,\bSALARY\s*PACKAGING\b,regex,SALARY PACKAGING
+salary_packaging,\bSALARY\s*PACKAGE\b,regex,SALARY PACKAGE
+salary_packaging,\bACCESS\s*PAY\b,regex,ACCESS PAY
+salary_packaging,\bACCESSPAY\b,regex,ACCESSPAY
+salary_packaging,\bSALARY\s*SACRIFICE\b,regex,SALARY SACRIFICE
+salary_packaging,\bEMPLOYER\s*BENEFIT\b,regex,EMPLOYER BENEFIT
+centrelink,\bCENTRE\s*LINK\b,regex,CENTRE LINK variant
+centrelink,\bCENTRELINK\b,regex,CENTRELINK
+centrelink,\bCTRLINK\b,regex,CTRLINK abbreviation
+centrelink,\bCTR\s*LINK\b,regex,CTR LINK variant
+centrelink,\bSERVICES\s*AUSTRALIA\b,regex,SERVICES AUSTRALIA
+centrelink,\bAUS\s*GOV\b,regex,AUS GOV
+centrelink,\bAUSTRALIAN\s*GOV(?:ERNMENT)?\b,regex,AUSTRALIAN GOVERNMENT
+centrelink,\bFAMILY\s*ALLOWANCE\b,regex,FAMILY ALLOWANCE
+centrelink,\bFAMILY\s*PAYMENT\b,regex,FAMILY PAYMENT
+centrelink,\bPENSION\b,regex,PENSION
+centrelink,\bYOUTH\s*ALLOWANCE\b,regex,YOUTH ALLOWANCE
+centrelink,\bJOB\s*SEEKER\b,regex,JOB SEEKER
+centrelink,\bJOBSEEKER\b,regex,JOBSEEKER
+centrelink,\bPARENTING\s*PAYMENT\b,regex,PARENTING PAYMENT
+centrelink,\bCARER\s*PAYMENT\b,regex,CARER PAYMENT
+centrelink,\bDISABILITY\s*SUPPORT\b,regex,DISABILITY SUPPORT
+self_employed_gig,\bUBER\b,regex,UBER
+self_employed_gig,\bUBER\s*PARTNER\b,regex,UBER PARTNER
+self_employed_gig,\bDOOR\s*DASH\b,regex,DOOR DASH
+self_employed_gig,\bDOORDASH\b,regex,DOORDASH
+self_employed_gig,\bMENULOG\b,regex,MENULOG
+self_employed_gig,\bDELIVEROO\b,regex,DELIVEROO
+self_employed_gig,\bAIRTASKER\b,regex,AIRTASKER
+self_employed_gig,\bPAYMENT\s*FOR\s*SERVICES?\b,regex,PAYMENT FOR SERVICE(S)
+self_employed_gig,\bINVOICE\b,regex,INVOICE
+self_employed_gig,\bCONTRACTOR\b,regex,CONTRACTOR
+self_employed_gig,\bBUSINESS\s*PAYMENT\b,regex,BUSINESS PAYMENT
+self_employed_gig,\bBUSINESS\s*INCOME\b,regex,BUSINESS INCOME
+self_employed_gig,\bSETTLEMENT\b,regex,SETTLEMENT
+self_employed_gig,\bSTRIPE\b,regex,STRIPE
+self_employed_gig,\bSQUARE\b,regex,SQUARE
+self_employed_gig,\bPAYPAL\b,regex,PAYPAL
+self_employed_gig,\bSHOPIFY\b,regex,SHOPIFY
+self_employed_gig,\bPARTNER\s+PAYMENT\b,regex,Gig platform partner payment (approx)
+self_employed_gig,\bPAYMENT\s*LINK\b,regex,PaymentLink gig platform payout
+self_employed_gig,\bDIDI\s+PARTNER\s+PAYMENT\b,regex,DiDi partner payment (not PayID-name DiDi)
+self_employed_gig,\bTRANSPORT\s+PARTNER\s+PAYMENT\b,regex,Transport gig partner payment
+self_employed_gig,\bAMAZON\s+PAYMENT\b,regex,Amazon gig payout (not employer Amazon SEV)
+self_employed_gig,\bTHERIGHTFIT\b,regex,TheRightFit gig platform
+self_employed_gig,\bJIMMY\s+BRINGS\b,regex,Jimmy Brings delivery platform
+self_employed_gig,\bTIPALTI\b,regex,Tipalti gig payout platform
+self_employed_gig,\bHUNGRY\s*PANDA\b,regex,HungryPanda delivery platform
+self_employed_gig,\bSPOTTO\b,regex,Spotto gig platform
+self_employed_gig,\bEFTPOS\s+PAYMENT\b,regex,EFTPOS payment (self-employed income)
+self_employed_gig,\bEFTPOS\s+TERMINAL\b,regex,EFTPOS terminal payment (self-employed)
+self_employed_gig,\bNATIONAL\s+BILLING\b,regex,National Billing self-employed payout
+self_employed_gig,\bHNRY\b,regex,Hnry self-employed tax/payout service
+self_employed_gig,\bTIMELY\s*PAY\b,regex,TimelyPay self-employed payout
+self_employed_gig,\bMERCHANT\s+WARRIOR\b,regex,Merchant Warrior payment gateway
+self_employed_gig,\bLIGHTSPEED\b,regex,Lightspeed POS self-employed payout
+self_employed_gig,\bNAYAX\b,regex,Nayax payment platform
+self_employed_gig,\bB2B\s*PAY\b,regex,B2BPay business-to-business payout
+wage_advance,\bBEFOREPAY\b,regex,BEFOREPAY
+wage_advance,\bMYPAYNOW\b,regex,MYPAYNOW
+wage_advance,\bWAGETAP\b,regex,WAGETAP
+wage_advance,\bSTEPPAY\b,regex,STEPPAY
+wage_advance,\bPRESS\s*PAY\b,regex,PRESS PAY
+wage_advance,\bPRESSPAY\b,regex,PRESSPAY
+wage_advance,\bWAGEPAY\b,regex,WAGEPAY
+return_like,\bRETURN\b,regex,RETURN
+return_like,\bDISHONOU?R(?:ED)?\b,regex,DISHONOUR/DISHONOURED
+return_like,\bREVERSAL\s+OF\s+DEBIT\b,regex,REVERSAL OF DEBIT
+hard_negative,\bINTERNAL\s*TRANSFER\b,regex,INTERNAL TRANSFER
+hard_negative,\bLINKED\s*ACC\b,regex,LINKED ACC
+hard_negative,\bREFUND\b,regex,REFUND
+hard_negative,\bREVERSAL\b,regex,REVERSAL
+hard_negative,\bADJUSTMENT\b,regex,ADJUSTMENT
+hard_negative,\bREBATE\b,regex,REBATE
+hard_negative,\bCASHBACK\b,regex,CASHBACK
+hard_negative,\bLOAN\b,regex,LOAN
+hard_negative,\bADVANCE\b,regex,ADVANCE
+hard_negative,\bCENTRE\s*LINK\b,regex,CENTRE LINK
+hard_negative,\bCENTRELINK\b,regex,CENTRELINK
+hard_negative,\bCTRLINK\b,regex,CTRLINK
+hard_negative,\bSERVICES\s*AUSTRALIA\b,regex,SERVICES AUSTRALIA
+hard_negative,\bATO\b,regex,ATO
+hard_negative,\bTAX\b,regex,TAX
+hard_negative,\bINTEREST\b,regex,INTEREST
+hard_negative,\bDIVIDEND\b,regex,DIVIDEND
+hard_negative,\bBNPL\b,regex,BNPL
+hard_negative,\bZIP\b,regex,ZIP
+hard_negative,\bAFTERPAY\b,regex,AFTERPAY
+hard_negative,\bWITHDRAWAL\b,regex,WITHDRAWAL
+soft_negative,\bTRANSFER\b,regex,TRANSFER
+soft_negative,\bOSKO\b,regex,OSKO
+gig_exclusion_extra,\bLOAN\s*DEPOSIT\b,regex,LOAN DEPOSIT exclusion for gig
+hard_negative,\bMEDICARE\b,regex,Medicare rebate/refund credit
+hard_negative,\bMCARE\b,regex,MCARE benefits (Medicare)
+hard_negative,\bNIB\b,regex,NIB health insurance rebate
+hard_negative,\bREDRAW\b,regex,Loan redraw proceeds
+hard_negative,\bMORTGAGE\b,regex,Mortgage-related credit
+hard_negative,\bUNPAID\b,regex,UNPAID item / returned cheque (not income)
+wage_advance,\bWAGE\s*ACCESS\b,regex,Earned Wage Access / wage advance service
+wage_advance,\bEARNED\s*WAGE\s*ACCESS\b,regex,Earned Wage Access explicit variant
+wage_advance,\bEARNEDWAGE\s*ACCESS\b,regex,Earned Wage Access concatenated (EARNEDWAGE ACCESS / EARNEDWAGEACCESS; aligns with liability engine keyword)
+centrelink,\bCHILD\s*SUPPORT\b,regex,Child Support (government agency)
+centrelink,\bCHILD\s*ASSIST\w*\b,regex,CHILDASSISTPYMT etc.
+centrelink,\bCARER\s*SUPPLEM\w*\b,regex,CARERSUPPLEMTCA (carer supplement)
+gig_exclusion_extra,UBER\s*\*?\s*EATS,regex,Uber Eats refund/reversal (not gig income)
+transfer_from,\bTRANSFER\s+FROM\b,regex,TRANSFER FROM flag (hard negative is waived when a strong wage keyword is present)
+hard_negative,\bLOANAD\b,regex,MONEYSPOT LOANAD payday-loan product code
+hard_negative,\bFIN\s+ONE\b,regex,FIN ONE PTY LTD payday lender
+pay_signal,\bPAY\b,regex,Standalone PAY word (transfer-from payroll signal)
+behavior_exclusion,\bDEPOSIT\s*ONLINE\s+\d+\s+TFR\b,regex,Self-transfer: deposit online transfer
+behavior_exclusion,\bTFR\s*FROM\s+\d{6,}\b,regex,Self-transfer: TFR FROM with account number
+behavior_exclusion,\bFUNDS\s*TFER\b.*\bFROM\s+\d{6,}\b,regex,Self-transfer: funds transfer from account number
+behavior_exclusion,\bPAY\s*BACK\b,regex,Repayment of money
+behavior_exclusion,\bSAVINGS\b,regex,Savings transfer
+behavior_exclusion,\bCONVERA\b,regex,Convera international remittance
+behavior_exclusion,\bRPYMT\b,regex,Repayment abbreviation
+behavior_exclusion,\bREPAY(?:MENT)?\b,regex,Repayment
+behavior_exclusion,\bCASH\s*DEPOSIT\b,regex,Cash deposit
+behavior_exclusion,\bDEPOSIT\s*CASH\b,regex,Cash deposit
+behavior_exclusion,\bRFUNDS\b,regex,Refund variant
+behavior_exclusion,\bOTHER\s*ACCOUNT\b,regex,Other account transfer
+behavior_exclusion,\bRENT\b,regex,Rent payment
+behavior_exclusion,\bATM\b,regex,ATM cash deposit
+behavior_exclusion,\bE\s*BANKING\s*TRANSFER\b,regex,Internet banking self-transfer
+behavior_exclusion,\bPAYMENT\s*THANK\s*YOU\b,regex,Payment acknowledgement
+behavior_exclusion,\bNABATM\b,regex,NAB ATM cash deposit
+behavior_exclusion,\bGIRLFRIEND\b,regex,Personal transfer (girlfriend)
+behavior_exclusion,\bPSP\d+\b,regex,Financial product reference
+behavior_exclusion,\bQUICK\s*ZONE\b,regex,Quick Zone money transfer service
+behavior_exclusion,\bEXPENSES\s+ACCOUNT\b,regex,Expenses account transfer
+behavior_exclusion,\bINTERNET\s*TRANSFER\s*CREDIT\s*FROM\s*X+\d+\b,regex,Internet transfer from masked account
+behavior_exclusion,\bBET\s*365\b,regex,BET365 gambling
