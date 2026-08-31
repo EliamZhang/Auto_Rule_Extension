@@ -139,6 +139,7 @@ DEFAULT_DETAIL_COLUMNS = [
     "transaction_date",
     "amount",
     "balance",
+    "account_type",
     "dr_cr",
     "text",
     "category",
@@ -1247,6 +1248,7 @@ def build_difference_details(
         "transaction_date",
         config.amount_column,
         "balance",
+        "account_type",
         "dr_cr",
         "text",
         "third_party",
@@ -1894,7 +1896,7 @@ def style_detail_header(ws, row: int, config: ReportConfig) -> None:
     cand_display_col = f"{c} Category"
 
     investigation = {"排查优先级", "排查类型", "差异流向", "差异流向数量", "是否关键Category"}
-    evidence = {"transaction_date", config.amount_column, "dr_cr", "text", "third_party", "counterparty"}
+    evidence = {"transaction_date", config.amount_column, "account_type", "dr_cr", "text", "third_party", "counterparty"}
     classification = {
         ref_display_col,
         cand_display_col,
@@ -2044,6 +2046,7 @@ def format_detail_columns(ws, header_row: int, data_rows: int, config: ReportCon
         "排查类型",
         "差异流向数量",
         "是否关键Category",
+        "account_type",
         "dr_cr",
     ]
     for header in center_headers:
@@ -2246,6 +2249,7 @@ def write_detail_sheet(
         "是否关键Category": 16,
         "transaction_date": 16,
         config.amount_column: 14,
+        "account_type": 14,
         "dr_cr": 10,
         "text": 52,
         "third_party": 30,

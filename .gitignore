@@ -37,4 +37,7 @@ scripts/.monitor/
 # Label compare reports (generated per run)
 category_difference_report*.xlsx
 
+# Flowchart drafts (ad-hoc, not part of the project)
+framework_flowchart.html
+
 
