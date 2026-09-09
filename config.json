@@ -1,8 +1,8 @@
 {
   "rules_base_dir": "raw",
   "engine_priorities": {
-    "initial": 1,
-    "transfer": 100,
+    "initial": 10,
+    "transfer": 1,
     "dishonour": 150,
     "income": 200,
     "liability": 300,
@@ -14,12 +14,16 @@
   "engines": {
     "initial": {
       "engine_dir": "initial_rule",
+      "finv_engine_dir": "initial_engine",
+      "finv_rule_dir": "",
       "rule_files": ["merchant_kb.csv"],
       "match_types": ["keyword"],
       "top_n_gaps": 100
     },
     "transfer": {
       "engine_dir": "transfer_rule",
+      "finv_engine_dir": "transfer_engine",
+      "finv_rule_dir": "resources",
       "rule_files": [
         "transfer_counterparty_rules.csv",
         "transfer_external_high_confidence_rules.csv",
@@ -31,18 +35,24 @@
     },
     "dishonour": {
       "engine_dir": "dishonour_rule",
+      "finv_engine_dir": "dishonour_engine",
+      "finv_rule_dir": "resources",
       "rule_files": ["dishonour_rules.csv"],
       "match_types": ["keyword", "regex"],
       "top_n_gaps": 50
     },
     "income": {
       "engine_dir": "income_rule",
+      "finv_engine_dir": "income_engine",
+      "finv_rule_dir": "resources",
       "rule_files": ["income_pattern_rules.csv"],
       "match_types": ["regex"],
       "top_n_gaps": 100
     },
     "liability": {
       "engine_dir": "liability_rule",
+      "finv_engine_dir": "liability_engine",
+      "finv_rule_dir": "resources",
       "rule_files": [
         "counterparty_keyword_rules.csv",
         "credit_card_rules.csv",
@@ -57,6 +67,8 @@
     },
     "all_other_credit": {
       "engine_dir": "all_other_credit_rule",
+      "finv_engine_dir": "all_other_credit_engine",
+      "finv_rule_dir": "resources",
       "rule_files": ["all_other_credit_rules.csv"],
       "match_types": ["keyword"],
       "top_n_gaps": 50,
@@ -64,6 +76,8 @@
     },
     "fee": {
       "engine_dir": "fee_rule",
+      "finv_engine_dir": "fee_engine",
+      "finv_rule_dir": "resources",
       "rule_files": ["fee_classification_rules.csv"],
       "match_types": ["regex"],
       "top_n_gaps": 100,
@@ -71,6 +85,8 @@
     },
     "rent": {
       "engine_dir": "rent_rule",
+      "finv_engine_dir": "rent_engine",
+      "finv_rule_dir": "resources",
       "rule_files": ["rent_rules.csv"],
       "match_types": ["keyword", "regex"],
       "top_n_gaps": 50,
@@ -78,6 +94,8 @@
     },
     "catch_all": {
       "engine_dir": "catch_all_rule",
+      "finv_engine_dir": "catch_all_engine",
+      "finv_rule_dir": "resources",
       "rule_files": ["catch_all_rules.csv"],
       "match_types": ["keyword", "regex"],
       "top_n_gaps": 200
@@ -147,7 +165,7 @@
   "large_files": {
     "merchant_kb.csv": {
       "skip_pattern_loading": true,
-      "note": "~9,000 rules with ~2.5M merchant rows. Skip for overlap checking to avoid OOM."
+      "note": "~876K merchants with ~1.34M keyword variants. Skip for overlap checking to avoid OOM."
     }
   },
   "validation": {

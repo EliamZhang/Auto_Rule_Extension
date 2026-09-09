@@ -231,7 +231,7 @@ def _check_rent(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str
 
 
 def _check_fee(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
-    """fee_engine: normalize_text() preserves case, re.compile() no flags.
+    """fee_engine: normalize_text() preserves case, re.compile(pattern, re.IGNORECASE).
 
     Source: fee_engine/domain/classification.py
     """
@@ -239,11 +239,11 @@ def _check_fee(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str,
     if not pattern:
         return issues
     try:
-        re.compile(pattern)
+        re.compile(pattern, re.IGNORECASE)
     except re.error as e:
         issues.append((
             "ERROR",
-            f"fee regex 编译失败（引擎使用 re.compile(pattern) 无 flags）: {e}"
+            f"fee regex 编译失败（引擎使用 re.compile(pattern, re.IGNORECASE)）: {e}"
         ))
         return issues
     if not pattern.startswith("^"):
@@ -305,9 +305,9 @@ def _check_dishonour(pattern: str, match_type: str, row: pd.Series) -> list[tupl
 
 
 def _check_income(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
-    """income_engine: clean_text() → uppercase, regex only, grouped by pattern_group.
+    """income_engine: clean_text_with_seams() → uppercase, regex only, grouped by pattern_group.
 
-    Source: income_engine/domain/classification.py
+    Source: income_engine/domain/classification.py (2026-08 起预处理为 clean_text_with_seams)
     """
     issues = []
     VALID_GROUPS = {
@@ -315,6 +315,10 @@ def _check_income(pattern: str, match_type: str, row: pd.Series) -> list[tuple[s
         "repeat_employer_like_exclusion", "salary_packaging", "centrelink",
         "self_employed_gig", "wage_advance", "return_like",
         "hard_negative", "soft_negative",
+        # 2026-08 新增的 7 组（income_pattern_rules.csv 实际内容）
+        "transfer_from", "pay_signal", "behavior_exclusion",
+        "gig_exclusion_extra", "gig_family_exclusion",
+        "gig_personal_transfer", "gig_personal_exclusion",
     }
     if "pattern_group" in row.index:
         group = str(row.get("pattern_group", "")).strip()
@@ -331,7 +335,7 @@ def _check_income(pattern: str, match_type: str, row: pd.Series) -> list[tuple[s
         if re.search(r"[a-z]", pattern):
             issues.append((
                 "WARNING",
-                "income: 引擎在 clean_text() 结果上匹配（全大写），小写字母可能匹配不到。"
+                "income: 引擎在 clean_text_with_seams() 结果上匹配（全大写），小写字母可能匹配不到。"
             ))
     return issues
 
@@ -347,7 +351,7 @@ def _check_liability(pattern: str, match_type: str, row: pd.Series) -> list[tupl
         if match_type == "keyword" and not pattern.isupper():
             issues.append((
                 "WARNING",
-                "liability counterparty: 引擎在 uppercase 文本上做 \\b 全词匹配，"
+                "liability counterparty: 引擎在 uppercase 文本上做边界匹配，"
                 "keyword 建议全大写。"
             ))
     elif "credit_card_rules" in target_file:
@@ -374,12 +378,13 @@ def _check_initial(pattern: str, match_type: str, row: pd.Series) -> list[tuple[
         if not pattern.isupper():
             issues.append((
                 "WARNING",
-                "initial keyword 建议全大写，引擎使用 clean_text() 转大写后匹配。"
+                "initial keyword 建议全大写，引擎在 clean_text() 转大写后的文本上匹配。"
             ))
         if re.search(r"[^A-Z0-9 |]", pattern):
             issues.append((
                 "WARNING",
-                "initial keyword: clean_text() 只保留 [A-Z0-9 ]，特殊字符会被移除。"
+                "initial keyword: 匹配文本只保留 [A-Z0-9 ]，特殊字符不会出现在文本中；"
+                "且 keyword 加载时不再自动 clean_text（2026-08 起），必须预清洗成大写规范形式。"
             ))
     if "category" in row.index:
         if str(row.get("category", "")).strip() == "Financial Institutions":

@@ -31,6 +31,7 @@ import pandas as pd
 
 from common import (
     load_config,
+    resolve_finv_path,
     resolve_rule_path,
     resolve_rules_base,
     META_COLUMNS,
@@ -223,10 +224,23 @@ def apply_rules(
                 log.info("    Written: %d new rules → %s", len(new_rules), rule_path)
 
                 if sync_to:
-                    sync_path = resolve_rule_path(sync_to, engine_id, eng_cfg, target_file)
-                    sync_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(rule_path, sync_path)
-                    log.info("    Synced → %s", sync_path)
+                    # finv_category_V2 的目录布局与本地 raw/ 不同：
+                    # initial → <finv>/initial_engine/<file>，其余 → <finv>/<engine>_engine/resources/<file>
+                    # 不再使用 resolve_rule_path（会写到 finv 不读取的 <engine>_rule/ 目录）
+                    sync_path = resolve_finv_path(sync_to, engine_id, eng_cfg, target_file)
+                    if not sync_path.parent.exists():
+                        log.error(
+                            "    SKIP SYNC: 目标目录不存在 %s（请检查 config.json 的 "
+                            "finv_engine_dir/finv_rule_dir 与 finv_category_V2 实际布局）",
+                            sync_path.parent,
+                        )
+                        applied["errors"].append({
+                            "engine": engine_id,
+                            "error": f"sync target dir missing: {sync_path.parent}",
+                        })
+                    else:
+                        shutil.copy2(rule_path, sync_path)
+                        log.info("    Synced → %s", sync_path)
 
                 engine_applied += len(new_rules)
                 engine_files[target_file] = {

@@ -79,10 +79,11 @@ def get_engine_priority(engine_id: str, config: dict[str, Any] | None = None) ->
         if engine_id in priorities:
             return priorities[engine_id]
 
-    # Built-in fallback
+    # Built-in fallback (matches finv_category_V2 configs/pipeline.json as of 2026-08-27:
+    # transfer=1, initial=10 — the two were swapped on 2026-08-27 commit 30a8da3)
     _DEFAULT_PRIORITIES: dict[str, int] = {
-        "initial": 1,
-        "transfer": 100,
+        "transfer": 1,
+        "initial": 10,
         "dishonour": 150,
         "income": 200,
         "liability": 300,
@@ -110,6 +111,25 @@ def resolve_rule_path(
     engine_dir = engine_config.get("engine_dir", f"{engine_id}_rule")
     rule_dir_rel = engine_config.get("rule_dir", "")
     return rules_base / engine_dir / rule_dir_rel / rule_file_name
+
+
+def resolve_finv_path(
+    finv_root: Path,
+    engine_id: str,
+    engine_config: dict[str, Any],
+    rule_file_name: str,
+) -> Path:
+    """Resolve a rule file path within the finv_category_V2 repo.
+
+    finv layout differs from the local raw/ layout:
+      - initial:   ``<finv_root>/initial_engine/<file>``            (merchant_kb.csv lives in engine root)
+      - all other: ``<finv_root>/<engine_id>_engine/resources/<file>``
+    Configure per-engine overrides via ``finv_engine_dir`` / ``finv_rule_dir``
+    in config.json (values verified against finv_category_V2 code, 2026-08-31).
+    """
+    finv_engine_dir = engine_config.get("finv_engine_dir", f"{engine_id}_engine")
+    finv_rule_dir = engine_config.get("finv_rule_dir", "resources")
+    return finv_root / finv_engine_dir / finv_rule_dir / rule_file_name
 
 
 def resolve_rules_base(project_root: Path, config: dict[str, Any]) -> Path:

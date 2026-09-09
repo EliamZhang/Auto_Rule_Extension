@@ -94,13 +94,17 @@ description: 为 finv_category_V2 交易分类流水线的 9 个引擎自动发�
 
 #### B. `label_compare_report.xlsx` — illion vs finv 分类差异（精准定位）
 
-报告包含 3 个 Sheet：
+报告包含 5 个 Sheet：
 
 **00_核心对比**：核心指标、逐 Category 差异与优化优先级（P1/P2/P3）、主要差异流向。P1 = 高差异量 + 高贡献率，最优先处理。
 
 **01_差异诊断地图**：Top N 差异流向、完整数量矩阵（行=illion, 列=finv）、差异流向占比矩阵。
 
+**02_业务聚类对比**：按业务聚类的差异汇总。
+
 **03_排查明细**：按排查优先级排序的逐笔差异明细，包含交易文本、金额、dr_cr、原分类、新分类、排查建议。
+
+**04_模型监控**：分类引擎的监控统计（覆盖情况、优先级等）。
 
 **差异类型 → 规则挖掘方向**：
 
@@ -259,15 +263,15 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
 
 | 引擎 | 文本预处理 | 大小写要求 | 匹配方式 | 关键约束 |
 |------|----------|----------|---------|---------|
-| **initial** | `clean_text()`: 仅 `[A-Z0-9 ]` | **大写** | Aho-Corasick 全词 + 最长胜出 | keyword 不能是 STOPWORDS 独立 token（70个），每商户最多50变体，`Financial Institutions` 整行被过滤 |
+| **initial** | `clean_text()`: 仅 `[A-Z0-9 ]` | **大写** | Aho-Corasick 全词 + 最长胜出 | keyword 不能是 STOPWORDS 独立 token（97个），每商户最多50变体，`Financial Institutions` 整行被过滤；**写入 CSV 的 keyword 仍须大写仅 [A-Z0-9 ]**（引擎端加载已不再 clean_text） |
 | **transfer** | `lower().strip()` | **小写** | regex 按 priority 第一匹配 | **regex 必须用小写**，dr_cr 列可选（debit/credit/空），对手方是子串匹配非全词 |
 | **dishonour** | 无预处理 | 不敏感(flags) | keyword(re.escape) OR regex+required_terms(AND) | keyword 自动 `re.escape` 转义特殊字符 |
-| **income** | `clean_text()` 大写 | 大写 | 仅 regex + 金额阈值 + 行为特征 | **不是纯文本匹配**，低于 $100 除非有工资历史否则不触发 |
-| **liability** | `upper().strip()` | 大写 | 多格式(全词\b/regex/条件) | counterparty 是全词，credit_card 的 keyword 列实际是 regex，home_loan 是 Format A 多字段 |
+| **income** | `clean_text_with_seams()` 大写 | 大写 | 仅 regex + 金额阈值 + 行为特征 | **不是纯文本匹配**，低于 $100 除非有工资历史否则不触发；18 个 pattern_group（含 transfer_from/pay_signal/gig_* 等新组） |
+| **liability** | `upper().strip()` | 大写 | 多格式(边界非\b/regex/条件) | counterparty 边界是 `(?<![A-Za-z])...(?!A-Za-z)`（**不是 \b**，数字可穿透），credit_card 的 keyword 列实际是 regex 且**只填充未认领行**，home_loan 是 Format A 12 列，stream_id 最终统一为 `loan_NNN` |
 | **all_other_credit** | 无预处理 | 不敏感(flags) | **仅 keyword** (re.escape) | **regex 模式未实现**，required_terms 被忽略，只处理入账(credit) |
-| **fee** | 仅压缩空格 | **大小写敏感** | regex 第一匹配，CSV动态加载 | category 仅两个值: `"fee"`(→"Fees") 和 `"Overdrawn"`，zero_amount_reject 机制 |
+| **fee** | 仅压缩空格 | **不敏感(IGNORECASE)** | regex 第一匹配，CSV动态加载 | **自 2026-08-20 起大小写不敏感**，category 仅两个值: `"fee"`(→"Fees") 和 `"Overdrawn"`，zero_amount_reject/unclassified_only/dr_cr 机制 |
 | **rent** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，category 恒为 `"Rent"`，orchestrator 已排除 income/liability 行 |
-| **catch_all** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，confidence 建议 0.70-0.85 |
+| **catch_all** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，confidence 建议 0.55-0.90 |
 
 **跨引擎关键交互**（来自 `orchestrator.py`）：
 - initial 的 "Financial Institutions"/"Debt Collection"/"Debt Consolidation" 在 pipeline 中被清除，由 liability 兜底
@@ -697,18 +701,18 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
 
 1. **单关键词 ≤ 2 个词的，必须额外检查**：常见词绝对不能单独做规则
 2. **新 pattern 必须 ≥ 3 个字符**
-3. **regex 必须包含 `\b` 或 `^`/`$`**
+3. **regex 必须包含 `\b` 或 `^`/`$`**（liability 的 regex 列除外——那里边界由引擎代码处理）
 4. **hit_samples 中超过 10% 看起来像其他分类 → 不生成**
 5. **宁可漏判也不要误判**
 6. **不自动修改已有规则**：只新增，不修改不删除
 7. **每个引擎的 CSV schema 必须严格匹配**
-8. **代码级匹配约束**（来自 finv_category_V2 源码分析）：
+8. **代码级匹配约束**（来自 finv_category_V2 源码分析，2026-08-31 核对）：
    - **transfer regex 必须用小写** — 引擎用 `text.lower()` 预处理
    - **catch_all keyword 必须是大写且仅含 `[A-Z0-9 ]`** — 引擎用 `clean_text()` 后做全词匹配
    - **rent keyword 必须是大写且仅含 `[A-Z0-9 ]`** — 引擎用 `clean_text()` 后做全词匹配，category 恒为 `Rent`
    - **all_other_credit 只支持 keyword 模式** — regex 在代码中未实现
-   - **fee 规则从 CSV 加载** — 可直接追加 CSV，pattern 大小写敏感
-   - **liability counterparty 匹配是全词 `\b...\b`** — 不会子串匹配
+   - **fee 规则从 CSV 加载** — 可直接追加 CSV，**大小写不敏感**（自 2026-08-20 起），可带 unclassified_only/dr_cr 列
+   - **liability counterparty 匹配边界是 `(?<![A-Za-z])...(?!A-Za-z)`，不是 `\b`** — 数字可穿透；counterparty CSV 无 rule_type 列，regex 规则需先加列
    - **transfer counterparty 匹配是子串** — 会子串匹配
 
 ## 脚本修改规范（硬性约束）
@@ -740,7 +744,7 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
 ## 各引擎规则格式参考
 
 - **dishonour / all_other_credit**：`rule_type, pattern, required_terms`
-- **fee**：`priority, rule_name, category, pattern, counterparty, match_type, zero_amount_reject, description`
+- **fee**：`priority, rule_name, category, pattern, counterparty, match_type, zero_amount_reject, unclassified_only, dr_cr, description`（10 列；大小写不敏感；unclassified_only=true 只处理未分类行；dr_cr 可填 credit/debit 限方向）
 - **rent**：`rule_name, category, pattern, match_type, confidence`（category 恒为 `Rent`；keyword 全大写仅 `[A-Z0-9 ]`，全词匹配；regex 在 clean_text 后匹配；最高 confidence 胜出）
 - **catch_all**：`rule_name, category, pattern, match_type, confidence`
 - **income**：`pattern_group, pattern, match_type, description`
