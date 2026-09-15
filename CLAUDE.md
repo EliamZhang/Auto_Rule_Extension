@@ -1,6 +1,6 @@
 # Auto Rule Extension
 
-基于 Claude Code 的智能规则维护系统，为 finv_category_V2 交易分类流水线的 9 个分类引擎自动发现并补充规则。
+基于 Claude Code 的智能规则维护系统，为 finv_category_V2 交易分类流水线的 10 个分类引擎自动发现并补充规则。
 
 ## 项目目标
 
@@ -17,32 +17,72 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 ## 与 finv_category_V2 的关系
 
 本系统是**完全独立项目**：
-- `raw/` 目录维护了各引擎规则 CSV 的本地副本（初始从 finv_category_V2 复制）
+- `raw/` 目录维护了各引擎规则 CSV 的本地副本；**事实源是 GitHub 上的 ServiFlow-AI**
+- **「上游改了、raw 要跟上」由 `scripts/sync_upstream.py` 处理**（HTTPS 直取，不经过 finv，
+  不要再手工 cp）—— 见下方「规则同步」章节
 - 确认的规则先写入本地 `raw/`，再通过 `--sync_to` 同步到 finv_category_V2
+- **「finv 改了、raw 要跟上」由 `scripts/sync_rules.py pull` 处理**（finv 侧独立演进时）
 - 不需要 finv_category_V2 的 Python 环境或模块
 - 输入数据来自 finv_category_V2 跑完流水线后导出的 .xlsx 分类报告
+- ⚠️ **规则文件的「新」不等于「行为一致」**：引擎自身也会重构（如 rent v2.0 从单层变双层）。
+  判断某条规则会怎么跑，必须读 finv 的引擎源码，不能只看规则 CSV
+
+### 合并进来的运维模块（`modules/`）
+
+除核心的规则发现链路外，仓库还并入了两个原本独立的运维项目，并新增了一个模块：
+
+| 模块 | 原项目 | 职责 | 入口 |
+|------|--------|------|------|
+| `modules/merchant_kb/` | Merchant-Extraction-new | ABR XML → `raw/initial_rule/merchant_kb.csv` | `build_knowledge_base.py` |
+| `modules/assessment/` | BS-CAT-Performance-Assessment | reviews/ 底稿 → `reports/` 分类性能报告 | `scripts/run_report.py` |
+| `modules/liability_enrich/` | ★ 新增 | 分类报告 → liability 放贷商候选规则 | `gap_source.py` + `/liability-enrichment` |
+
+三者都**直接消费/生产本仓库根目录的数据**（`raw/`、`reviews/`、`reports/`），
+不再是自成一体的独立项目。各自的 CLAUDE.md / README.md 见模块目录下。
+
+### Skills（`.claude/skills/`）
+
+| Skill | 用途 | 环节 |
+|-------|------|------|
+| `/auto-rule-extension` | 10 引擎规则发现与补充（主链路） | 分析 → 候选 → 审批 → 落库 |
+| `/liability-enrichment` | 联网核实疑似放贷商 → liability 候选 | `modules/liability_enrich` Step 2 |
+| `/merchant-kb-maintenance` | merchant_kb 构建/清洗/合并/校验 | `modules/merchant_kb` 流程入口 |
+| `/classify-merchants` | 新商户联网分类（写 `category` 列） | `merchant-kb-maintenance` 场景 C |
+| `/performance-report` | 出分类性能报告（md/docx/pdf/图表） | `modules/assessment` 流程入口 |
+
+> 早期仓库根曾有一个 `SKILL.md` 作为「Skill 入口」，该文件已在 commit `6529997` 删除 ——
+> skills 现在由 `.claude/skills/` 目录直接发现，不需要中转文件。
 
 ## 目标项目架构
 
-### finv_category_V2 的 9 个引擎
+### finv_category_V2 的 10 个引擎
 
 > ⚠️ **2026-08-27 起（commit 30a8da3）initial 与 transfer 的执行顺序已交换**：
 > transfer 现在是第一个执行的引擎（priority=1），initial 变为第二个（priority=10）。
-> **实际执行顺序: transfer → initial → dishonour → income → liability → all_other_credit → fee → rent → catch_all**。
+> **实际执行顺序: transfer → initial → dishonour → gambling → income → liability → all_other_credit → fee → rent → catch_all**。
 > 由于后执行的引擎行级覆盖前面的，**initial 的商户 KB 匹配现在会覆盖 transfer 的分类**（以前相反）。
 > 事实源: `finv_category_V2/configs/pipeline.json`。
+>
+> ⚠️ **gambling（priority=180）是 2026-09 新增的第 10 个引擎**，ARE 于 2026-09-15 纳入。
+> 它接管了原先分散在两处的赌博识别：merchant_kb.csv 的 1,822 个 Gambling 商户
+> （2026-09-02 从 KB 删除）和 catch_all 的 16 条通用赌博关键词。详见下方 gambling 章节。
 
 | 优先级 | engine_id | 规则文件 | 匹配方式 | 文本预处理 | 规则数 |
 |--------|-----------|----------|----------|-----------|--------|
-| 1 | transfer | 8 个 CSV | regex(小写) + keyword(子串) | `lower().strip()` | ~150 |
-| 10 | initial | `merchant_kb.csv` | Aho-Corasick 全词 | `clean_text()` 大写 | ~876K商户/~1.34M keywords |
-| 150 | dishonour | `dishonour_rules.csv` | keyword(re.escape) + regex | 无(flags) | ~15 |
-| 200 | income | `income_pattern_rules.csv` + `income_config.csv` | regex + 金额阈值 + 行为特征 | `clean_text_with_seams()` 大写 | ~217 |
-| 300 | liability | 8 个 CSV（多格式） | keyword(边界) + regex 双 tier | `upper().strip()` | ~500+ |
-| 400 | all_other_credit | `all_other_credit_rules.csv` | keyword(re.escape) 仅入账 | 无(flags) | ~33 |
-| 500 | fee | `fee_classification_rules.csv` | regex(大小写不敏感,^锚定) | 仅压缩空格 | ~113 |
-| 800 | rent | `rent_rules.csv` | keyword(全词) + regex, 最高conf胜出 | `clean_text()` 大写 | ~15 |
-| 999 | catch_all | `catch_all_rules.csv` | keyword(全词) + regex, 最高conf胜出 | `clean_text()` 大写 | ~455 |
+| 1 | transfer | 8 个 CSV | regex(小写) + keyword(子串) | `lower().strip()` | 235 |
+| 10 | initial | `merchant_kb.csv` | Aho-Corasick 全词 | `clean_text()` 大写 | 874,600 商户 / 1,338,895 keywords |
+| 150 | dishonour | `dishonour_rules.csv` | keyword(re.escape) + regex | 无(flags) | 14 |
+| 180 | gambling | `gambling_rules.csv` | 双层：institution(Aho-Corasick 全词) + keyword/regex(最高conf) | `clean_text()` 大写 | 1,838 |
+| 200 | income | `income_pattern_rules.csv` + `income_config.csv` | regex + 金额阈值 + 行为特征 | `clean_text_with_seams()` 大写 | 217 (+17 配置) |
+| 300 | liability | 8 个 CSV（多格式） | keyword(边界) + regex 双 tier | `upper().strip()` | 1,072 |
+| 400 | all_other_credit | `all_other_credit_rules.csv` | keyword(re.escape) 仅入账 | 无(flags) | 33 |
+| 500 | fee | `fee_classification_rules.csv` | regex(大小写不敏感,^锚定) | 仅压缩空格 | 113 |
+| 800 | rent | `rent_rules.csv` | 双层：institution(Aho-Corasick 全词) + keyword/regex(最高conf) | `clean_text()` 大写 | 21,809 |
+| 999 | catch_all | `catch_all_rules.csv` | keyword(全词) + regex, 最高conf胜出 | `clean_text()` 大写 | 439 |
+
+> ⚠️ **规则数以 `raw/` 实测为准**（`scripts/sync_rules.py status` 会打印行数）。
+> 历史上 rent 一栏长期写着「~15」，实际早已是 **21,809 条**——rent 引擎 v2.0 把
+> 21,794 个租赁机构商户搬进了 `rent_rules.csv`，详见下方 rent 章节。
 
 ### 每个引擎的代码级规则使用详解
 
@@ -232,7 +272,99 @@ rules = [(rule_type, pattern, [term1, term2, ...]), ...]
 
 ---
 
-#### 4. income_engine (优先级 200) — 收入识别
+#### 4. gambling_engine (优先级 180) — 赌博识别
+
+**源码位置**: `gambling_engine/engine.py`（258 行）+ `classification_core/merchant_institution.py`
+（与 rent_engine v2.0 **共用同一套加载/匹配机制**）
+
+> ⚠️ **新引擎（engine_version 1.0），ARE 于 2026-09-15 纳入**。它把原先分散在两处的
+> 赌博识别合并到一处：`merchant_kb.csv` 的 1,822 个 Gambling 商户（2026-09-02 从 KB
+> 删除）成为 institution 层，catch_all 的 16 条通用赌博关键词成为 rule 层
+> （catch_all_rules.csv 里的 Gambling 行已清零）。
+
+##### 规则加载（`load_rules`，与 rent 共用）
+
+```python
+CSV: rule_name, category, pattern, match_type, confidence, counterparty, source
+→ rule 层（source != institution）: list[(rule_name, category, pattern, match_type, confidence)]
+                                   按 confidence 降序
+→ institution 层（source == institution）: {rule_name → (pattern, counterparty)}，按文件顺序
+```
+
+| `source` | 条数 | 语义 | counterparty |
+|----------|------|------|--------------|
+| `rule` | 16 | 原 catch_all 的通用赌博关键词 | 空（引擎输出 `"-"`） |
+| `institution` | 1,822 | 从 merchant_kb.csv 搬出的 Gambling 商户 | 商户名 |
+
+当前实测：全部 `match_type=keyword`、全部 `category=Gambling`；
+institution 行 confidence 一律 0.95，rule 行落在 0.70–0.90；
+**变体数最大 35**（远低于 `MAX_VARIANTS_PER_INSTITUTION=50`，**没有 rent 那种静默截断**）。
+
+##### 两层匹配逻辑
+
+```
+【rule 层】(source=rule)
+  candidates → exclude_prior_claimed(prior_claims)   ← ⚠️ 对所有更早引擎的认领让位
+  clean_text(text)
+  遍历规则（confidence 降序）:
+    keyword: str.find + 全词边界（前后必须是空格或字符串边界）
+    regex:   re.search(pattern, text)
+  → 最高 confidence 胜出
+  → counterparty = "-"
+
+【institution 层】(source=institution)
+  build_institution_automaton(institutions)   ← pattern 按 | 拆分，最多 50 个变体
+  对**全部** candidates（不只未认领的）:
+    text → clean_text_with_channel_prefix()   ← 与 initial 相同的通道前缀清洗
+    match_institutions() → Aho-Corasick，最长 keyword 胜出，全词边界
+  命中后**丢弃**该命中的两种情形：
+    1. 该行已被 fee 或 dishonour 引擎认领
+    2. initial 引擎已认领该行，且其命中 keyword 长度 >= 本次 gambling 命中的长度
+       （复刻搬迁前 KB 自动机跨全类别按长度排名、等长归 initial 的结果）
+  → counterparty = 商户名
+
+【合并】institution 层命中**优先于** rule 层（0.95 > rule 层的 ≤0.90）
+```
+
+##### 与 orchestrator 的关系（⚠️ 与 rent 不同）
+
+- gambling 的 `candidates` **不做** income/liability 排除 —— 它比这两个引擎**先跑**
+- ⚠️ **赌博认领对 income/liability 是终局**：orchestrator 在 commit 前**丢弃**
+  income(200) 和 liability(300) 在 gambling 已认领行上的预测 —— 赌客从博彩公司收到的
+  payout（退款/入账）**永远不会被重新标成 Wages**。这是唯一一个"反向压制"后置引擎的机制
+- 其余后置引擎（all_other_credit / fee / rent / catch_all）**保持后来者覆盖**的语义
+- rule 层的 `exclude_prior_claimed` 意味着：gambling 的 rule 行**只对
+  transfer/initial/dishonour 都没认领的行生效**（priority 180 时能存在的全部前置认领）
+- ⚠️ 源码 docstring 指出：institution 层里"让位给 fee"的分支**现实中永不触发**
+  （fee 现在晚于 gambling 运行），fee 与 gambling 的双重命中改由 fee 在 priority 500
+  的后置认领解决；**只有 fee 那条要求"未认领"的 keyword 兜底规则**才会给 gambling 让路
+
+##### 输出
+
+- `finv_category = "Gambling"`（硬编码，CSV 的 category 列仅作一致性占位）
+- `counterparty` = institution 层命中时为**商户名**，rule 层命中时为 `"-"`
+- `classification_rule_id` = rule_name（institution 层为常量 `gambling_merchant_kb`）
+- `classification_reason` = institution 层带 `keyword=`/`merchant=`，rule 层带 `confidence=`
+- `stream_id = pd.NA`
+
+##### 对规则生成的影响
+
+- **新增通用赌博关键词 → 走 rule 层**（`source=rule`，counterparty 留空），
+  confidence 参照现有 0.70–0.90；**这是最安全的增量方式**
+- **新增具体赌博商户 → 走 institution 层**（`source=institution`，counterparty 填商户名，
+  confidence 照写 0.95）—— 但注意 institution 层会**让位**给 initial 的等长/更长 keyword 命中
+- ⚠️ **rule 行对 transfer/initial/dishonour 已认领的行不生效** —— 如果缺口行已被这三个引擎
+  认领（例如商户名命中了 merchant_kb），加 gambling rule 规则**不会有任何效果**，
+  得先确认该行的 `classification_engine`
+- 两层的文本侧都是 `[A-Z0-9 ]`（institution 层额外剥离通道前缀），keyword 必须大写
+- **institution 行的 pattern 是 `|` 分隔的变体表**，`match_type` 与 `confidence` 列**都不被读取**
+- **只生成 Gambling 分类的规则** — 引擎只输出 "Gambling" 一个 category
+- `analyze_gaps.py` 把 `pattern_type == "gambling"` 的模式路由到本引擎
+  （`pattern_classification.gambling_indicators` 命中即判为 gambling，**优先级最高**）
+
+---
+
+#### 5. income_engine (优先级 200) — 收入识别
 
 **源码位置**: `income_engine/domain/classification.py` (1246行) + `income_engine/pipeline.py` + `income_engine/domain/summary.py`
 
@@ -391,7 +523,7 @@ effective_hard_negative = 有 hard_negative 且 非(有 transfer_from 且 有 st
 
 ---
 
-#### 5. liability_engine (优先级 300) — 负债/贷款识别
+#### 6. liability_engine (优先级 300) — 负债/贷款识别
 
 **源码位置**: `liability_engine/pipeline.py` (62行) + `liability_engine/domain/counterparty.py` (646行) + `liability_engine/domain/streams.py` (2414行) + `liability_engine/domain/special_rules.py` (93行) + `liability_engine/domain/dishonours.py` (27行)
 
@@ -528,7 +660,7 @@ generic_loan      → Non SACC Loans   ⭐ 新增
 
 ---
 
-#### 6. all_other_credit_engine (优先级 400) — 杂项入账
+#### 7. all_other_credit_engine (优先级 400) — 杂项入账
 
 **源码位置**: `all_other_credit_engine/engine.py` (83行)
 
@@ -561,7 +693,7 @@ CSV: rule_type, pattern, required_terms
 
 ---
 
-#### 7. fee_engine (优先级 500) — 费用识别
+#### 8. fee_engine (优先级 500) — 费用识别
 
 **源码位置**: `fee_engine/domain/classification.py` (258行)
 
@@ -618,59 +750,99 @@ CSV 中 `zero_amount_reject=true` 的规则，在交易金额为 $0.00 时被撤
 
 ---
 
-#### 8. rent_engine (优先级 800) — 房租识别
+#### 9. rent_engine (优先级 800) — 房租识别
 
-**源码位置**: `rent_engine/engine.py` (183行)
+**源码位置**: `rent_engine/engine.py`（**v2.0**，双层结构）+ `classification_core/merchant_institution.py`
+
+> ⚠️ **rent 引擎在 commit `daec0be`「gambling和rent引擎」中重构为 v2.0**：
+> `rent_rules.csv` 从 5 列扩到 **7 列**（新增 `counterparty`、`source`），
+> 规则数从 15 条变成 **21,809 条**。旧文档「~15 条规则」已严重失真。
 
 ##### 规则加载 (`_load_rules`)
 ```python
-CSV: rule_name, category, pattern, match_type, confidence
-→ list[(rule_name, category, pattern, match_type, confidence)]
-→ 按 confidence 降序排列
-```
-当前 15 条规则（原文档约 10 条）。
-
-##### 文本预处理
-```python
-clean_text(value)  # 与 initial_engine 相同：大写 + 仅[A-Z0-9 ] + 压缩空格
+CSV: rule_name, category, pattern, match_type, confidence, counterparty, source
+→ keyword/regex 层: list[(rule_name, category, keyword, match_type, confidence)]，按 confidence 降序
+→ institution 层:   {rule_name → [keyword...]}（pattern 用 | 分隔多个变体）
 ```
 
-##### 匹配逻辑（逐行迭代，非向量化）
-```
-对每个候选行:
-  clean_text(text) → 遍历规则（已按 confidence 降序）:
-    keyword 模式: str.find(keyword) + 全词边界检查
-      - 前后必须是空格或字符串边界（与 catch_all 相同的全词逻辑）
-    regex 模式: re.search(pattern, text)
-    → 最高 confidence 匹配胜出（不是第一个匹配！）
-```
+| `source` | 条数 | 语义 |
+|----------|------|------|
+| `rule` | 15 | 原始手写通用规则（RENT / TENANCY / LANDLORD / REAL ESTATE …），confidence 0.75–0.90，counterparty 为空 |
+| `institution` | 21,794 | 特定租赁机构/中介商户，confidence **全部 0.95**，counterparty = 商户名 |
 
-⚠️ **REAL ESTATE 全词陷阱**: 现有规则 `REAL ESTATE`（keyword）匹配 "REAL ESTATE AGENT" 但**不匹配** "REAL ESTATEAGENT"（现实中常见无空格拼写）。生成规则时注意这一点——如需覆盖无空格变体，用 regex 或额外 keyword。
+##### 两层匹配逻辑（⚠️ 与旧版单层完全不同）
+
+```
+【institution 层】仅当存在 institution 行时启用：
+  build_institution_automaton(institutions)
+  text → clean_text_with_channel_prefix()   ← 与 initial_engine 相同的通道前缀清洗，不是干净的 clean_text
+  match_institutions() → Aho-Corasick，最长 keyword 胜出，全词边界
+  命中后**丢弃**该命中的两种情形：
+    1. 该行已被 fee 或 dishonour 引擎认领（这两个引擎在重构前也压得过 initial 的认领）
+    2. initial 引擎已认领该行，且其命中 keyword 长度 >= rent 命中的 keyword 长度
+       （重构前 initial 的自动机跨**全部** category 按长度排名，等长归 initial）
+  → counterparty = institution 的商户名
+
+【keyword/regex 层】原有语义，逐行迭代：
+  clean_text(text) → 遍历规则（按 confidence 降序）:
+    keyword: str.find + 全词边界（前后必须是空格或字符串边界）
+    regex:   re.search(pattern, text)
+  → 最高 confidence 胜出（不是第一个匹配！）
+  → counterparty = "-"
+
+【合并】institution 层命中**优先于** keyword 层（`inst_win` 覆盖 `kw_win`）
+```
 
 ##### 与 orchestrator 的关系（重要）
-- rent 在 orchestrator 中被特殊处理：`candidates` 已排除被 `income` 或 `liability` 认领的行
-- rent **不使用** `exclude_prior_claimed`，income/liability 保护完全在 orchestrator 层完成
+- rent 的 `candidates` 已排除被 `income` 或 `liability` 认领的行
+- rent **不使用** `exclude_prior_claimed`；但 institution 层通过 `prior_claim_keys()` 主动
+  排除 fee / dishonour 的认领行（见上）
+- **dishonour(150) 和 fee(500) 都在 rent(800) 之前执行**，它们的认领压得过
+  initial(priority 10) 的商户 KB 认领 —— 所以 institution 层也必须对它们让位，
+  否则重构会让这些行从 fee/dishonour 变成 Rent
 
 ##### 输出
 - `finv_category = "Rent"`（硬编码，不是 CSV 的 category 列）
-- `counterparty = "-"` (硬编码)
-- `classification_rule_id = rule_name`
+- `counterparty` = institution 层命中时为**商户名**，keyword 层命中时为 `"-"`
+- `classification_rule_id` = rule_name（institution 层为常量 `rent_merchant_kb`）
 - `classification_reason = "category=Rent; rule=<rule>; evidence=confidence=<0.XX>"`
 - `stream_id = pd.NA`
 
 ##### 对规则生成的影响
-- **keyword 是全词匹配**（经过 clean_text 的大写文本） — "RENT" 匹配 "RENT JANUARY 2024" 但不匹配 "PARENT"
-- **keyword 必须是大写且仅含 [A-Z0-9 ]** — 与 initial/catch_all 相同
-- **regex 在 clean_text 后的文本上匹配** — 不需要考虑大小写变体
-- **category 列虽存在但引擎忽略** — 输出恒为 "Rent"，CSV 中 category 列填 "Rent" 仅为保持一致性
+- **两层规则要用不同的 confidence 策略**：institution 层的 0.95 会压过手写规则的 0.90；
+  往 keyword 层加规则时，confidence 低于 0.95 的规则会被任何命中的 institution 覆盖
+- **institution 层用 `clean_text_with_channel_prefix`**（含通道前缀剥离），keyword 层用
+  `clean_text` —— 新增 institution 行时 keyword 仍需是大写、仅 `[A-Z0-9 ]`
+- **keyword 是全词匹配** — "RENT" 匹配 "RENT JANUARY 2024" 但不匹配 "PARENT"
 - **最高 confidence 胜出，不是第一匹配** — confidence 值非常重要
 - **只生成 Rent 分类的规则** — 引擎只输出 "Rent" 一个 category
 - **orchestrator 已排除 income/liability 的行** — 房租规则不会被这两个引擎的分类行触发
-- **confidence 建议范围**: 现有规则 0.75–0.90
+- **confidence 建议范围**: keyword 层 0.75–0.90（现有手写规则的实际范围）；
+  institution 层固定 0.95
+
+⚠️ **REAL ESTATE 全词陷阱**: 现有规则 `REAL ESTATE`（keyword）匹配 "REAL ESTATE AGENT" 但**不匹配** "REAL ESTATEAGENT"（现实中常见无空格拼写）。生成规则时注意这一点——如需覆盖无空格变体，用 regex 或额外 keyword。
+
+⚠️ **已知数据状态矛盾**: 引擎 docstring 称这批商户是「从 `merchant_kb.csv` 搬出来的
+（category=Rent）」，但实测**两边都在**——KB 里 21,794 条 Rent 行与 rent_rules.csv 的
+21,794 条 institution 行 **100% 重合**。因此这些行通常先被 initial（priority 10）认领，
+institution 层的「等长让位」规则再让它落回 initial。**改这批数据前先确认这是有意为之**。
+
+⚠️ **institution 行同样有 50 变体上限**（`MAX_VARIANTS_PER_INSTITUTION`，与 merchant_kb 同）。
+实测 2 行超限，超出部分静默失效：
+
+| 规则 | 变体数 | 实际生效 | 被丢弃的示例 |
+|------|--------|---------|-------------|
+| `ABACUS STORAGE OPERATIONS LIMITED` | 134 | 前 50 | `STORAGE KING CRESTMEAD` 等 84 个 |
+| `ELDERS RURAL SERVICES AUSTRALIA LIMITED` | 51 | 前 50 | `ELDERS VP MERCHANDISE` |
+
+`scripts/validate_candidates.py` 的 `_check_rent` 已适配 v2.0 双层：institution 行会检查
+match_type 必须为 keyword（否则是死规则）、变体数上限、逐变体的字符集，
+且**不会**再把该层的 conf 0.95 误报为「偏高」（引擎对该层忽略 confidence 列，
+恒用代码常量 `INSTITUTION_CONFIDENCE = 0.95`）。
 
 ---
 
-#### 9. catch_all_engine (优先级 999) — 兜底关键词
+#### 10. catch_all_engine (优先级 999) — 兜底关键词
 
 **源码位置**: `catch_all_engine/engine.py` (228行)
 
@@ -680,7 +852,11 @@ CSV: rule_name, category, pattern, match_type, confidence
 → list[(rule_name, category, pattern, match_type, confidence)]
 → 按 confidence 降序排列
 ```
-当前 455 条规则（原文档约 280 条）。
+当前 439 条规则（原文档约 280 条）。
+
+> 2026-09-14 曾把本地多出的 16 条 Gambling 规则按 finv 版丢弃，raw 与 finv 已对齐。
+> **这 16 条没有消失** —— 它们已迁入 `gambling_rules.csv` 的 rule 层（`source=rule`），
+> 由 priority 180 的 gambling 引擎接管。当前 catch_all 的 Gambling 类别行数为 0。
 
 ##### 文本预处理
 ```python
@@ -739,15 +915,21 @@ priority, rule_name, category, pattern, counterparty, match_type, zero_amount_re
 - `dr_cr` 列值为 `"credit"`/`"debit"` 时只在对应方向生效
 - priority 升序排列，数字越小优先级越高
 
-#### rent_engine
+#### rent_engine / gambling_engine（共用 `load_rules`，同构 7 列）
 ```
-rule_name, category, pattern, match_type, confidence
+rule_name, category, pattern, match_type, confidence, counterparty, source
 ```
-- keyword 在 `clean_text()` 后的文本上做**全词匹配**（`str.find` + 空格边界）
-- regex 在 `clean_text()` 后的文本上做 `re.search`
-- **最高 confidence 胜出**（不是第一匹配），confidence 降序加载
-- category 列恒为 `"Rent"`（引擎输出硬编码为 "Rent"，CSV 中的 category 仅作一致性占位）
-- confidence 建议 0.75–0.90
+- **7 列**（v2.0 起；旧文档的 5 列 schema 已过时）—— gambling 与 rent 列结构完全相同
+- `source` 决定走哪一层：`rule`（通用关键词，rule 层）或 `institution`（特定商户，institution 层）
+- **institution 层**：`clean_text_with_channel_prefix()` 后用 Aho-Corasick 做全词匹配，**最长 keyword 胜出**，
+  命中后可能被 fee/dishonour 的认领或 initial 的等长/更长 keyword 让位（见上方各引擎章节），counterparty = 商户名
+- **rule 层**：`clean_text()` 后 keyword 做全词匹配（`str.find` + 空格边界）、regex 做 `re.search`，
+  **最高 confidence 胜出**（不是第一匹配），confidence 降序加载，counterparty = `-`
+  - ⚠️ **两层对"已被更早引擎认领的行"的态度不同**：rent 的 rule 层可以重新认领，
+    gambling 的 rule 层走 `exclude_prior_claimed`，**对所有前置认领让位**
+- `pattern` 列在 institution 行里是 `|` 分隔的多个 keyword 变体（与 merchant_kb 的 keywords 列同构）
+- category 列恒为 `"Rent"` / `"Gambling"`（引擎输出硬编码，CSV 中的 category 仅作一致性占位）
+- confidence：rent rule 层 0.75–0.90；**gambling rule 层 0.70–0.90**；两者 institution 层固定 0.95
 
 #### catch_all_engine
 ```
@@ -851,7 +1033,19 @@ keyword, match_type, exclusion_reason, priority, description
 ```
 merchant_name, keywords, category
 ```
-（**自 2026-08-27 起仅 3 列** — 原文档 7 列 schema 过时；link/category_source/updated_at 等列已删除，merchant_kb.csv 重建为 ~876K 行）
+（**自 2026-08-27 起仅 3 列** — 原文档 7 列 schema 过时；link/category_source/updated_at 等列已删除。
+**当前实测：874,600 行 / 1,338,895 keywords**，空 category 行为 0）
+
+> ⚠️ **2026-09-02 finv 侧做过一次 Gambling 清理**：从 KB 中删除了全部 1,819 条 Gambling 商户
+> （如 `888 LOTTO PTY LTD`、`21bit Casino`），并把 `LOTTOPIA PTY LTD` 从 Gambling 改为 Retail。
+> finv 的 KB 因此在很长一段时间里是 ARE 的**严格子集**。2026-09-14 已按「finv 为准」对齐，
+> 覆盖前的版本在 `raw/initial_rule/merchant_kb.csv.bak`。
+> **当前 KB 中 Gambling 类别行数为 0** —— 这是有意为之，不是数据丢失。
+> **这批商户没有消失**：2026-09-15 起它们由 priority 180 的 `gambling_engine` 接管，
+> 落在 `raw/gambling_rule/gambling_rules.csv` 的 institution 层（见上方 gambling 章节）。
+>
+> 另有一个已知数据质量问题：`Australia Post` 有 **5,486 个 keyword**，但 initial_engine 每个
+> 商户只取前 50 个，其余 5,436 个从未生效。
 - `keywords`: pipe `|` 分隔的多个变体（每个商户最多 50 个）
 - ⚠️ **keyword 加载不再 clean_text**（引擎端只去 `_STOPWORDS` 中的独立 token + 去重）；但匹配在 `clean_text()` 后的文本上做 —— **写入 CSV 的 keyword 仍必须是大写且仅 `[A-Z0-9 ]`**，否则无法匹配（如 `KFC AUSTRALIA` 正常，`KFC (AUS)` 会因括号失配）
 - `category`: 不能为 `"Financial Institutions"`（整行被过滤）
@@ -867,9 +1061,13 @@ merchant_name, keywords, category
 3. 后面引擎的预测**行级覆盖**前面的 (finv_category + counterparty 成对替换)
 4. 特殊处理: liability_engine 的 candidates 排除已被 income 分类为 Wages/Centrelink 的行
 5. 特殊处理: rent_engine 的 candidates 排除已被 income 或 liability 认领的行
-6. 所有引擎预测被归档到 claim_archive（用于 baseline diff 检测回归）
-7. 最终未被任何引擎认领的标记为 "unclassified"
-8. 输出行带 4 个分类元数据列（xlsx 报告新增，自 2026-08 起）:
+6. 特殊处理: income_engine / liability_engine 的预测在**提交前**丢弃 gambling(180)
+   已认领的行 —— gambling 的认领对这两个引擎是**终局**（唯一一处「反向抑制」：
+   正常是后执行覆盖先执行，这里先执行的 gambling 反过来压住后执行的 income/liability，
+   否则博彩平台的派彩入账会被 income 重新打成 Wages）
+7. 所有引擎预测被归档到 claim_archive（用于 baseline diff 检测回归）
+8. 最终未被任何引擎认领的标记为 "unclassified"
+9. 输出行带 4 个分类元数据列（xlsx 报告新增，自 2026-08 起）:
    classification_status / classification_engine / classification_engine_version / classification_priority
    —— baseline 与 gap 分析可按 classification_engine 定位规则归属引擎
 ```
@@ -879,10 +1077,14 @@ merchant_name, keywords, category
 - **initial → liability**: initial 匹配的 "Debt Collection"/"Debt Consolidation" 被清除，由 liability 处理
 - **income → liability**: orchestrator 在 liability 前排除 Wages/Centrelink 行
 - **income/liability → rent**: orchestrator 在 rent 前排除 income/liability 认领的行
+- **gambling → income/liability**: ⚠️ **反向**的排除 —— orchestrator 丢弃 income/liability 在
+  gambling 已认领行上的预测（gambling 的认领是终局）。同时 gambling 的 rule 层走
+  `exclude_prior_claimed`，对**所有**更早引擎（transfer/initial/dishonour）的认领让位
 - **initial → income**: income_engine 复用 initial_engine 的 cached automaton 做 KB counterparty 查找
 - **transfer → all_other_credit**: all_other_credit 可覆盖 "External Transfers"（保留在 candidates 中）
 - **initial → catch_all**: catch_all 通过 `exclude_prior_claimed` 排除所有前面引擎的分类
-- **覆盖规则**: 后执行的引擎总是覆盖前面的，不管 confidence 高低
+- **覆盖规则**: 后执行的引擎总是覆盖前面的，不管 confidence 高低 ——
+  **唯一例外是 gambling 对 income/liability 的终局认领**（见上）
 
 ### 各引擎文本预处理差异（重要！）
 
@@ -895,12 +1097,13 @@ merchant_name, keywords, category
 | liability | `normalize_match_text()`: `re.sub(r"\s+", " ", str(value).strip().upper())` | 大写 |
 | all_other_credit | 无特殊预处理 | 不敏感(flags) |
 | fee | `normalize_text()`: 仅压缩空格 `re.sub(r"\s+", " ", str(value)).strip()` | **不敏感(IGNORECASE)** |
-| rent | `clean_text()` (同 initial) | 大写 |
+| rent | **双层**：institution 层用 `clean_text_with_channel_prefix()`（同 initial，含通道前缀剥离）；keyword 层用 `clean_text()` | 大写 |
+| gambling | **双层**（同 rent）：institution 层用 `clean_text_with_channel_prefix()`；rule 层用 `clean_text()` | 大写 |
 | catch_all | `clean_text()` (同 initial) | 大写 |
 
 **这意味着**:
 - 为 transfer 生成 regex 规则时，**必须用小写**
-- 为 catch_all/initial/rent 生成 keyword 规则时，**必须用大写且仅 `[A-Z0-9 ]`**
+- 为 catch_all/initial/rent/gambling 生成 keyword 规则时，**必须用大写且仅 `[A-Z0-9 ]`**
 - 为 income 生成 regex 规则时，在 `clean_text_with_seams()` 后的文本上匹配（大写，标点按 seam 规则保留）
 - fee 大小写不敏感（自 2026-08-20 起）—— pattern 无需考虑大小写变体
 
@@ -909,48 +1112,77 @@ merchant_name, keywords, category
 ```
 D:\project\Auto_Rule_Extension\
 ├── CLAUDE.md              ← 本文件（项目上下文 + 引擎机制详解）
-├── SKILL.md               ← Skill 入口（指向 .claude/skills/）
 ├── README.md              ← 项目概览 + 快速开始
-├── config.json            ← 配置（引擎定义、分析参数）
+├── config.json            ← 配置（引擎定义、finv_root、分析参数）
+├── .sync_state.json       ← raw/ ↔ finv 的三方同步基线（纳入 git）
+├── .upstream_state.json   ← GitHub → raw/ 的同步基线：每文件的 ETag + 内容 sha256（纳入 git）
+├── .upstream_cache/       ← blobless 浅抓取缓存，只有 commit/tree（gitignore）
+├── docs/                  ← 设计文档（docs/superpowers/specs/）
 ├── raw/                   ← 各引擎规则 CSV 的本地副本
-│   ├── initial_rule/merchant_kb.csv
+│   ├── initial_rule/merchant_kb.csv      ← 同时是 modules/merchant_kb 的产物
 │   ├── transfer_rule/*.csv
-│   ├── rent_rule/rent_rules.csv
+│   ├── rent_rule/rent_rules.csv          ← 21,809 条（7 列）
+│   ├── gambling_rule/gambling_rules.csv  ← 1,838 条（7 列，双层：16 rule + 1,822 institution）
 │   ├── catch_all_rule/catch_all_rules.csv
 │   └── ...
-├── input/                 ← 数据入口（.xlsx 分类报告）
+├── modules/               ← 从独立项目合并进来的运维模块
+│   ├── merchant_kb/       ← ABR XML → merchant_kb.csv 的构建流水线
+│   ├── assessment/        ← BS-CAT 分类性能报告生成
+│   └── liability_enrich/  ← ★ 新增：放贷商缺口发现 + 候选验证（Step 2 见 skill）
+├── input/                 ← 数据入口（.xlsx 分类报告，用户手工放入）
 ├── scripts/
 │   ├── common.py              ← 共享工具（配置加载、路径解析、引擎元数据）
+│   ├── sync_upstream.py       ← 同步层 1：GitHub → raw/（HTTPS 直取，不经过 finv）
+│   ├── sync_rules.py          ← 同步层 2：finv 工作副本 ↔ raw 三方对比，只拉不推
 │   ├── analyze_gaps.py        ← 统计层：发现高频未覆盖模式
 │   ├── label_compare.py       ← 质检层：illion vs finv 分类差异质检报告
-│   ├── search_merchant.py     ← 工具：搜索 merchant_kb.csv 中的商户/keyword
+│   ├── search_merchant.py     ← 工具：搜规则 CSV 的商户/keyword（列名按角色识别，merchant_kb 与 gambling/rent 都支持）
 │   ├── validate_candidates.py ← 验证层：语法+Schema+重叠检查
 │   ├── baseline.py            ← 基线层：save 保存基线 / diff 模拟影响面
 │   ├── test_rules.py          ← 测试层：确认规则在真实数据上的实际表现
 │   └── apply_rules.py         ← 执行层：写入确认规则到本地 raw/
-├── .claude/skills/         ← Claude Code Skill 定义
-├── reviews/               ← 每次运行的审核产物
+├── .claude/skills/        ← Claude Code Skill 定义（5 个，见上方「Skills」表）
+├── reviews/               ← 每次运行的审核产物（label_compare.py 的输出）
 │   └── <date>/
 │       ├── gap_summary.json
-│       ├── label_compare_report.xlsx
+│       ├── label_compare_report.xlsx     ← modules/assessment 的默认输入
 │       ├── <engine>_candidates.csv
+│       ├── liability_gaps.json           ← modules/liability_enrich Step 1
+│       ├── liability_candidates.csv      ← Step 2（skill）+ Step 3 回填
+│       ├── liability_evidence.json       ← Step 3 诊断明细
 │       ├── validation_report.json
 │       └── impact_report.json
+├── reports/               ← modules/assessment 的输出（每次运行一个时间戳目录）
+│   └── <YYYY-MM-DD_HHMM>/
 ├── baseline/              ← 基线快照
 │   └── <date>/
 │       └── baseline.json.gz
 └── .gitignore
 ```
 
+> **git 追踪范围**：`raw/` 的规则 CSV **纳入 git**（25 个 CSV + `category_catalog.json`，
+> 是本地工作副本的事实记录）；
+> 但 `raw/**/*.bak`（sync_rules.py 的备份）、`input/`、`reviews/`、`reports/`、`baseline/`
+> 均 gitignore，只保留 `.gitkeep`。`modules/merchant_kb/cbcbcb已经清洗/` 是历史清洗数据，同样 gitignore。
+>
+> ⚠️ `raw/initial_rule/merchant_kb.csv`（74 MB）也在 git 里，`.git` 已因此膨胀到 145 MB。
+> 「把 KB 移出 git 并清理历史」是已识别但**尚未执行**的决定。
+
 ## 工作流程
 
 ```
+0. 🔁 规则同步（分析前必做，拿过期规则做分析会得出错误候选）：
+   0a. `python scripts/sync_upstream.py` — GitHub(ServiFlow-AI) → `raw/`，HTTPS 直取，
+       **不经过 finv**。上游没变的文件走 HTTP 条件请求、不下载正文；覆盖前强制 `.bak`；
+       本地改过的文件**不覆盖**（那是「raw 领先」，属推送方向）。先用 `--dry-run` 预览
+   0b. `python scripts/sync_rules.py status` → 确认 raw/ 与 finv 无漂移；
+       有「finv 领先」则 `pull` 对齐（自动 .bak 备份，只拉不推）
 1. 用户在 finv_category_V2 跑完流水线，导出 .xlsx 分类报告
 2. 用户将 .xlsx 放入 input/ 目录
 3. 用户启动 Claude Code Skill（/auto-rule-extension）
 4. Claude 执行 baseline.py save → 保存当前分类状态快照
 5. Claude 执行 analyze_gaps.py → 生成各引擎的 gap_summary.json
-6. Claude 执行 label_compare.py → 生成 illion vs finv 分类差异质检报告
+6. Claude 执行 label_compare.py → 生成 illion vs finv 分类差异质检报告（写入 reviews/<date>/）
 7. Claude 读取 gap_summary + label_compare_report + 各引擎已有规则 → 逐引擎分析 → 生成候选规则 CSV
 8. Claude 执行 validate_candidates.py → 语法/Schema 验证
 9. Claude 执行 baseline.py diff → 影响面分析（gain/conflict）
@@ -959,7 +1191,114 @@ D:\project\Auto_Rule_Extension\
 12. Claude 打印测试分析报告 → 🔴 弹出最终确认窗口
 13. 用户最终确认后，Claude 执行 apply_rules.py → 写入本地 raw/
 14. （可选）执行 apply_rules.py --sync_to <finv_path> 同步到 finv_category_V2
+15. （可选）需要性能报告时：modules/assessment/scripts/run_report.py --with-charts
+    → 读 reviews/ 最新底稿，产物落 reports/<时间戳>/
 ```
+
+## 规则同步（GitHub → raw/，以及 raw/ ↔ finv）
+
+两个**独立**方向，别混淆：
+
+| 脚本 | 方向 | 用途 |
+|------|------|------|
+| `sync_upstream.py` | GitHub → `raw/` | 让规则跟上线上（分析前必做） |
+| `sync_rules.py` | finv ↔ `raw/` | 看漂移、finv 领先时 pull；推送仍走 apply_rules 审批门 |
+
+```
+GitHub: EliamZhang/ServiFlow-AI
+  └─ sync_upstream.py ─→ raw/                (HTTPS 直取，不经过 finv)
+                            ↑
+     ../finv_category_V2 ───┘  sync_rules.py  (只读比较；finv 领先时 pull)
+```
+
+`../finv_category_V2` 本身就是 ServiFlow-AI 的 git clone，但它**不参与拉取**：
+要它中转就得先 git fetch + 切分支（本地在 `Finv_category_v2`、上游是 `main`），
+会改变用户跑流水线的那个环境。规则 CSV 两边同构，直接下载即可。
+finv 仍有两个不可替代的用途：`apply_rules.py --sync_to` 的**推送目标**，
+以及**引擎源码**来源（判断规则行为必须读它）。
+
+### 第 1 段：`sync_upstream.py`（GitHub → raw/）
+
+```bash
+python scripts/sync_upstream.py                    # 拉取并写入 raw/
+python scripts/sync_upstream.py --dry-run          # 只报告差异，不写任何文件
+python scripts/sync_upstream.py --branch staging   # 换上游分支
+python scripts/sync_upstream.py --accept-upstream  # 本地有改动时仍采用上游版本
+```
+
+上游地址与分支取 `config.json` 的 `upstream.url` / `upstream.branch`（当前 `main`）。
+
+**范围**：`raw/<引擎目录>/*.csv`，共 25 个 —— 含 config 的 `rule_files` 漏登记的
+`income_config.csv`、`bnpl_maximum_limits.csv` 和 4 个 transfer pattern 文件；
+外加 `raw/category_catalog.json`（合计 26 个）。`category_catalog.json` 不是规则，但它会
+原样进 `gap_summary.json` 的 `category_catalog` 字段供 skill 读 —— 陈旧的 `owner_engine_id`
+会误导引擎归属判断，历史上就这么静默漂移过（Gambling 的 owner 停在 `initial,catch_all`）。
+不碰 finv，不创建本地没有的引擎目录。
+
+**硬约束**：
+
+- **只拉不推**。推送仍只能走 `apply_rules.py --sync_to` 的审批门
+- **覆盖前强制 `.bak` 备份**（与 `sync_rules.py` 同名同位置）
+- **本地自上次同步后被改动的文件拒绝覆盖**；`--accept-upstream` 是显式逃生门。
+  这防止「刚审批进 `raw/`、还没推到 finv」的规则被上游更新静默抹掉
+- ⚠️ **行尾归一后再比对**：上游按索引内容发 LF，而 `raw/` 与 finv 工作副本是 CRLF
+  （finv 仓库 `core.autocrlf` 把 LF 检出成 CRLF，`raw/` 又从 finv 复制而来）。
+  不归一的话 18 个文件会被误判成「有差异」。写入时再转回该文件既有的行尾风格，
+  保持 `raw/` 与 finv 字节可比，免得 `sync_rules.py` 平白报出一堆漂移
+- **HTTP 条件请求**（`If-None-Match`）：上游未变的文件不下载正文。
+  `merchant_kb.csv`（74 MB）因此几乎零流量 —— 状态记在 `.upstream_state.json`（纳入 git）
+
+除同步外它还会**只读地**报告两件事：finv 的 HEAD 落后上游多少（**引擎代码**可能过期，
+而函数行为取决于引擎源码），以及「上游有、本地未跟踪的规则文件」—— 后者是发现
+上游新增引擎的唯一途径。文件清单来自 `.upstream_cache/` 的 blobless 浅抓取
+（只有 commit/tree、无文件正文，约 81 KB），刻意**不用** GitHub REST API：
+匿名额度仅 60 次/小时，限流时这个检查会静默失效。
+
+### 第 2 段：`sync_rules.py`（finv 工作副本 → raw/）
+
+`raw/` 是本地工作副本，事实源是 GitHub 上的 ServiFlow-AI；finv 工作副本是它的检出。
+`raw/` 与 finv 两边各自演进，**不要手工 cp**：
+
+```bash
+python scripts/sync_rules.py status                          # 漂移总览（默认动作）
+python scripts/sync_rules.py status --engine rent --diff     # 看某个引擎的行级差异
+python scripts/sync_rules.py pull                            # finv → raw（自动 .bak 备份）
+python scripts/sync_rules.py pull --dry-run                  # 只预览
+python scripts/sync_rules.py adopt                           # 把当前状态登记为新基线
+```
+
+判定依据仓库根的 **`.sync_state.json`**：记录上次登记时**两侧各自**的内容 sha256。
+据此三方对比——只有一侧变了、还是两侧都变了。记录的是内容哈希而非时间戳，
+因此与机器无关，克隆到新机器后同步状态依然有效。
+
+| 条件 | 状态 | 动作 |
+|------|------|------|
+| 两侧 hash 均未变 | 一致 | — |
+| 仅 finv 变 | finv 领先 | pull |
+| 仅 raw 变 | raw 领先 | `apply_rules.py --sync_to` 推上去 |
+| 两侧均变 | 冲突 | 只报告，人工裁决 |
+| 清单中无记录 | 未登记 | 人工确认后 adopt |
+| adopt 时两侧就不同 | 已登记分叉 | 人工裁决（不自动 pull） |
+
+**硬约束**：
+
+- **只拉不推**。推送必须走 `apply_rules.py --sync_to`（在审批门之后），本脚本不提供 push
+- **pull 默认只处理安全情形**：状态是 finv 领先，**且登记基线本身是收敛的**
+  （基线 `raw_sha == finv_sha`）。第二条保证 raw 当前内容就是「上次同步后的 finv 内容」，
+  覆盖它不会丢掉任何本地改动。基线本身就分叉的文件默认拒绝 pull
+- **`--accept-finv` 是显式逃生门**：人工看过 `--diff` 后用它表达「我决定采用 finv 侧」，
+  未登记/冲突/已登记分叉都放行，覆盖前强制 `.bak` 备份
+- **`merchant_kb.csv` 默认不参与 pull**（74 MB），要拉必须显式加 `--include-large`
+- 文件清单 = config 的 `rule_files` ∪ 两侧目录里实际存在的 `*.csv`。
+  只信 config 不够——实测 config 的 `rule_files` 是「规则创作清单」而非文件全量
+  （liability 少 `bnpl_maximum_limits.csv`、transfer 少 4 个 pattern/exclusion 文件、
+  income 少 `income_config.csv`），而这些都会实质影响流水线行为
+
+> ⚠️ **同步状态反映的是 `raw/` 与 finv 的一致性，不代表行为一致。** 例：rent_engine 是
+> v2.0 双层引擎，若某个应用环境仍跑旧版引擎，同一份 `rent_rules.csv` 行为会不同。
+> 判断「哪边新」用 sync_rules；判断「跑起来什么样」必须看 finv 的引擎源码。
+>
+> **2026-09-15 状态**：25 个文件全部「一致」（含新增的 `gambling/gambling_rules.csv`）。
 
 ## 引擎规则使用机制
 
@@ -976,7 +1315,8 @@ D:\project\Auto_Rule_Extension\
 | liability | 混合（取决于子模块） | 多子模块 pipeline | 各模块独立排序 |
 | all_other_credit | 原始 text（case=False） | `str.contains` **仅 keyword** | OR |
 | fee | 空格归一化，**大小写不敏感**(IGNORECASE) | `re.search` | 先匹配先得（priority 升序） |
-| rent | `clean_text()` 大写 [A-Z0-9] | `str.find` + 全词 / `re.search` | 最高 confidence 优先 |
+| rent | **双层**：institution 层 `clean_text_with_channel_prefix()` 大写；keyword 层 `clean_text()` 大写 | institution: Aho-Corasick + 全词；keyword: `str.find` + 全词 / `re.search` | institution 最长 keyword 优先；keyword 层最高 confidence 优先 |
+| gambling | **双层**（同 rent） | 同 rent | 同 rent；但 rule 层走 `exclude_prior_claimed` 对前置认领让位 |
 | catch_all | `clean_text()` 大写 [A-Z0-9] | `str.find` + 全词 / `re.search` | 最高 confidence 优先 |
 
 ⚠️ 生成规则时必须注意：
@@ -985,6 +1325,9 @@ D:\project\Auto_Rule_Extension\
 - **fee 大小写不敏感**（自 2026-08-20 起）：`^MONTHLY\s+FEE$` 也能匹配 `monthly fee`；且规则带 `unclassified_only`/`dr_cr` 可选列
 - **income 不是简单关键词匹配**：必须满足金额阈值 + payer_key + 频率模式
 - **transfer 只能输出 Internal Transfer / External Transfers**：不能生成其他分类
+- **gambling 认领对 income/liability 是终局**：赌博行不会被这两者重新认领；反过来
+  gambling 的 rule 层对**所有**更早引擎（transfer/initial/dishonour）的认领让位 ——
+  商户名若已命中 merchant_kb，再往 rule 层加规则不会有任何效果
 - **initial_engine 的通道前缀被自动去除**：不需要在 pattern 中包含 `DEBIT CARD PURCHASE ` 等前缀
 
 ## 重要约定
@@ -992,6 +1335,17 @@ D:\project\Auto_Rule_Extension\
 - 任何规则写入操作前必须经过人工确认，不可自动执行
 - 新规则保持各引擎已有规则的 confidence 范围和命名风格
 - 输入必须是 finv_category_V2 流水线处理后的 .xlsx 报告，包含 classification_status 列
-- `raw/` 目录的规则文件是本地工作副本，初始从 finv_category_V2 复制，后续由 apply_rules.py 维护
+- `raw/` 目录的规则文件是本地工作副本，初始从 finv_category_V2 复制，后续由 apply_rules.py 维护。
+  **finv 侧改动要同步下来时用 `sync_rules.py pull`**（会自动 `.bak` 备份），不要手工 cp。
+  pull 是「只拉不推」——推送仍然只能走 apply_rules.py 的审批门
 - 同步到 finv_category_V2 后，需在 finv_category_V2 中手动运行 baseline.py 更新基线
+- **`raw/initial_rule/merchant_kb.csv` 就是 finv 的线上规则文件**（不是普通中间产物）。
+  它同时是 `modules/merchant_kb` 的产物，列结构由 initial_engine 的 `usecols` 锁定为 3 列
 - **生成每个候选规则前，必须参考本文件上方对应引擎的章节确认文本归一化方式与匹配逻辑**
+- **候选 CSV 里只有 `scripts/common.py` 的 `META_COLUMNS` 列会被剥离**，其余列一律当规则数据写进 `raw/`。
+  需要新的诊断字段（如联网来源 URL）时：要么加进 `META_COLUMNS`（已有 `status`、`hit_count`、
+  `risk_level`、`illion_category`、`samples`、`target_file`、`evidence_source`），
+  要么写进旁边的 JSON 报告 —— **不要直接往候选 CSV 加列**
+- **`apply_rules.py` 只写入 `status == "confirmed"` 的行**（`apply_rules.py:137`，
+  逐字符比较）。`☐ confirm`、`✗ 零增益`、`✗ 死规则` 等占位值都不等于 `confirmed`，是安全的。
+  新增任何 status 取值时**绝不能等于 `confirmed`**

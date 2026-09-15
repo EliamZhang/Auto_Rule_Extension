@@ -1,0 +1,18 @@
+# modules/assessment 的第三方依赖
+#
+# 安装:
+#   python -m pip install -r modules/assessment/requirements.txt
+#
+# 说明:
+#   - 不锁定版本（与项目「不引入版本锁定」的约定一致）。
+#   - matplotlib / seaborn / reportlab 只在部分生成器中被导入，且多为函数内
+#     延迟导入——因此即使缺失，run_report.py --with-charts 之外的纯文本报告
+#     与各脚本的 --help 仍然可用。
+
+openpyxl        # 全部生成器：读取 xlsx 底稿
+python-docx     # generate_docx_category_report.py
+reportlab       # generate_full_category_report.py（PDF）
+matplotlib      # generate_coverage_*.py、generate_dotplot_preview.py、md 报告内嵌图表
+seaborn         # generate_dotplot_preview.py、md 报告内嵌图表
+pandas          # 同上（仅用 pd.DataFrame 构造图表数据）
+numpy           # generate_coverage_heatmap.py、md 报告（colormap）

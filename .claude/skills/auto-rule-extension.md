@@ -1,11 +1,11 @@
 ---
 name: auto-rule-extension
-description: 为 finv_category_V2 交易分类流水线的 9 个引擎自动发现并补充分类规则。用户说"补充规则"、"发现盲区"、"分析未覆盖交易"、"扩展规则库"、"/auto-rule-extension" 时触发。
+description: 为 finv_category_V2 交易分类流水线的 10 个引擎自动发现并补充分类规则。用户说"补充规则"、"发现盲区"、"分析未覆盖交易"、"扩展规则库"、"/auto-rule-extension" 时触发。
 ---
 
 # Auto Rule Extension Skill
 
-为 finv_category_V2 交易分类流水线的 9 个引擎自动发现并补充规则。
+为 finv_category_V2 交易分类流水线的 10 个引擎自动发现并补充规则。
 
 ## 语言要求（强制）
 
@@ -19,7 +19,9 @@ description: 为 finv_category_V2 交易分类流水线的 9 个引擎自动发�
 运行本 Skill 前，必须确认：
 1. `input/` 目录下有 `.xlsx` 分类报告（取最新日期的文件）
 2. 报告必须包含 `transactions` sheet，且至少有 `text`、`classification_status`、`category`（illion 标签）、`finv_category` 列
-3. `raw/` 目录下有各引擎的规则 CSV 文件（已从 finv_category_V2 同步）
+3. `config.json` 的 `finv_root` 指向一个可用的 finv_category_V2 工作副本
+   （阶段零对齐的是 `raw/`，**不会改 finv** —— 它仍是 `--sync_to` 的推送目标
+   和引擎源码来源。规则以 GitHub 为准，不需要手工保证 finv 是最新的）
 
 ## 输入格式
 
@@ -39,19 +41,20 @@ description: 为 finv_category_V2 交易分类流水线的 9 个引擎自动发�
 本 Skill 共 8 个阶段，**全程自动推进**，仅在两个节点使用 AskUserQuestion 等待人工审批：
 
 ```
-阶段一 → 阶段二 → 阶段三 → 阶段四  （AI 自动完成，无需人工）
-                              ↓
-                    🔴 阶段五：逐引擎 AskUserQuestion 审批
-                              ↓ 确认完成 → 自动推进
-                    🔴 阶段六：自动跑 test_rules.py
-                              ↓
-                    🔴 阶段七：AskUserQuestion 最终确认
-                              ↓ 确认完成 → 自动推进
-                    阶段八：自动写入规则
+阶段零 → 阶段一 → 阶段二 → 阶段三 → 阶段四  （AI 自动完成，无需人工）
+                                        ↓
+                              🔴 阶段五：逐引擎 AskUserQuestion 审批
+                                        ↓ 确认完成 → 自动推进
+                              🔴 阶段六：自动跑 test_rules.py
+                                        ↓
+                              🔴 阶段七：AskUserQuestion 最终确认
+                                        ↓ 确认完成 → 自动推进
+                              阶段八：自动写入规则
 ```
 
 | 阶段 | 名称 | 触发方式 | 产出 |
 |------|------|----------|------|
+| 零 | 规则同步（GitHub → `raw/`） | 自动，失败时问 | `raw/` 与上游对齐 |
 | 一 | 数据准备与缺口发现 | 自动 | `gap_summary.json` + `label_compare_report.xlsx` |
 | 二 | 解读分析结果 | 自动 | 理解 gaps + disagreements + label 差异 |
 | 三 | 逐引擎智能分析 | 自动 | `*_candidates.csv` |
@@ -60,6 +63,69 @@ description: 为 finv_category_V2 交易分类流水线的 9 个引擎自动发�
 | 六 | test_rules.py 测试 | 阶段五确认后自动 | `test_report.json` |
 | 七 | 🔴 AI 分析报告 + AskUserQuestion 最终确认 | **AskUserQuestion 等待人工** | 最终确认规则 JSON |
 | 八 | 执行写入 | 阶段七确认后自动 | 规则写入 `raw/` + 可选 sync |
+
+---
+
+### 阶段零：规则同步（GitHub → raw/）
+
+**为什么必做**：分析拿的是 `raw/` 里的规则。如果 `raw/` 落后于线上，会针对**已经被上游
+修过的**缺口生成候选，得出错误结论。这一步在任何分析之前，不产出候选、不改任何规则。
+
+**一条命令，直接从 GitHub 下载，不经过 finv**：
+
+```bash
+python scripts/sync_upstream.py             # 直接执行（脚本自带全部安全检查）
+python scripts/sync_upstream.py --dry-run   # 只在想先预览时用
+```
+
+```
+GitHub (ServiFlow-AI)  ──sync_upstream.py──→  raw/   ← 各引擎规则 CSV，HTTPS 直取
+```
+
+脚本从 `raw.githubusercontent.com` 取各引擎的规则 CSV 写进 `raw/`，
+**不 fetch、不 checkout、不写 finv 的任何文件** —— finv 是用户跑流水线的环境，
+不该被同步动作改动。它只在末尾**只读地**看一眼 finv 的 HEAD，报告它落后上游多少。
+
+所以不需要 dry-run 前置步骤，直接跑、读输出即可：
+
+- 上游地址与分支取 `config.json` 的 `upstream.url` / `upstream.branch`。
+- **HTTP 条件请求**：上游没变的文件不下载正文（`merchant_kb.csv` 74 MB 因此几乎零流量）。
+- 覆盖前强制 `.bak` 备份。
+- 输出里 `[ok]` = 已最新、`[skip]` = 拒绝、**`[pull]` 才是真的写入了文件**。
+- `[warn] … 本地已改动` 表示该文件是**本地领先**（用户改过、上游没动），
+  属推送方向（`apply_rules.py --sync_to`），不是拉取方向，**不要覆盖它**。
+
+**失败时怎么办 —— 不要跳过，也不要强行继续**：
+
+| 情况 | 脚本行为 | 你该做什么 |
+|------|---------|-----------|
+| 本地有未登记改动，上游也变了 | 拒绝覆盖该文件（`[skip]`） | 报告给用户看差异，由用户决定是否加 `--accept-upstream` |
+| 网络失败 | 该文件报 `[err]`，其余照常 | 报告并问用户：用当前 `raw/` 继续，还是先修网络 |
+| 上游没有该文件 | `[miss]` | 报告给用户（可能上游删了或改名了） |
+| 「上游有、本地未跟踪的规则文件」 | 只报告，不建文件 | **AskUserQuestion**：是否把该引擎纳入本项目 |
+| finv 落后上游 | 只报告 | 提示用户：`raw/` 已对齐，但 finv 的**引擎代码**没有 —— 判断规则行为时注意 |
+
+失败时**不要**自行用 `git stash` / `git checkout --` / `--accept-upstream` 绕过 ——
+这些都会丢掉用户的改动或本地规则。**停下来问**。
+
+**与 `sync_rules.py` 的分工**（两者都需要，别混淆）：
+
+| 脚本 | 方向 | 用途 |
+|------|------|------|
+| `sync_upstream.py` | GitHub → `raw/` | 阶段零：让规则跟上线上 |
+| `sync_rules.py` | finv ↔ `raw/` | 看 `raw/` 与 finv 的漂移；finv 领先时 pull |
+
+```bash
+python scripts/sync_rules.py status          # 漂移总览
+python scripts/sync_rules.py pull            # 有「finv 领先」则拉（自动 .bak 备份）
+```
+
+| `sync_rules.py` 报「冲突」或「已登记分叉」 | 只报告，不自动 pull | **AskUserQuestion**：采用 finv 侧（`--accept-finv`）还是保留 raw 侧（`--sync_to`） |
+
+> `merchant_kb.csv`（74 MB）默认不参与 `sync_rules.py pull`，要拉需显式加 `--include-large`。
+> 它同时是 `modules/merchant_kb` 的产物，属三方分叉，需人工裁决。
+
+**产出**：`raw/` 与上游一致（或已明确报告为何没有一致）
 
 ---
 
@@ -138,21 +204,30 @@ illion 标签是半自动标注，不是 100% 准确的 ground truth。使用策
 
 | gap_summary 分配的引擎 | 实际应归属 | 原因 |
 |------------------------|-----------|------|
-| transfer（赌博平台） | **initial** | 文本含 "VISA DEBIT PURCHASE CARD" 被误判为转账，实际是赌博商户 |
+| transfer（赌博平台） | **gambling**（商户名 → institution 层） | 文本含 "VISA DEBIT PURCHASE CARD" 被误判为转账；博彩商户归 gambling 引擎，不归 initial |
 | catch_all（商户名/品牌名） | **initial** | 任何品牌名/平台名/店铺名都不属于 catch_all |
+| catch_all（赌博关键词） | **gambling** | BET、CASINO、LOTTERY 等通用博彩词 → gambling 的 rule 层 |
 | catch_all（费用描述） | **fee** | 含 FEE 关键词的应优先考虑 fee_engine |
 | catch_all（入账描述） | **all_other_credit** | 利息、退款等入账类应优先考虑 all_other_credit |
 | catch_all（转账描述） | **transfer** | Fast Transfer、Osko Payment 等 |
 | initial（内部转账） | **transfer** 或 skip | "EVERYDAY ROUND UP" 是内部转账，不是商户 |
 
 **执行方式**：逐条审视每个 pattern，回答：
-1. 这是商户名/品牌名吗？→ 是 → 归 initial（不管 gap_summary 怎么说）
-2. 这是费用描述吗？→ 是 → 归 fee
-3. 这是入账交易吗？→ 是 → 优先归 all_other_credit
-4. 这是转账描述吗？→ 是 → 归 transfer
-5. 归入正确引擎后，再继续后续分析。
+1. 这是赌博/博彩平台或博彩关键词吗？→ 是 → 归 gambling（**优先于下面各条**）
+2. 这是商户名/品牌名吗？→ 是 → 归 initial（不管 gap_summary 怎么说）
+3. 这是费用描述吗？→ 是 → 归 fee
+4. 这是入账交易吗？→ 是 → 优先归 all_other_credit
+5. 这是转账描述吗？→ 是 → 归 transfer
+6. 归入正确引擎后，再继续后续分析。
 
-**纠偏后**，transfer 引擎中的赌博平台全部移到 initial，catch_all 中的商户名全部移到 initial。
+**纠偏后**，transfer 引擎中的博彩平台移到 **gambling**，catch_all 中的商户名全部移到 initial，
+catch_all 中的通用博彩关键词移到 gambling 的 rule 层。
+
+> ⚠️ **2026-09-15 起赌博商户不再进 merchant_kb**：finv 侧 2026-09-02 已从 KB 删除全部 Gambling
+> 商户，改由 priority 180 的 `gambling_engine` 的 institution 层接管（`raw/gambling_rule/gambling_rules.csv`，
+> 现有 1,822 条）。原因是 gambling 的认领对 income/liability 是**终局** —— 若把博彩商户留在
+> merchant_kb（initial，priority 10），博彩平台的派彩入账会被 income 重新打成 Wages。
+> **新发现的博彩商户写入 `gambling_candidates.csv`，不要写 initial_candidates.csv。**
 
 ---
 
@@ -167,7 +242,7 @@ illion 标签是半自动标注，不是 100% 准确的 ground truth。使用策
 | 禁止行为 | 正确做法 |
 |----------|----------|
 | 把品牌名/平台名放入 catch_all 做 keyword | 走 3.1 流程：查 merchant_kb → 新增或更新商户 |
-| 把赌博网站名放入 catch_all | 新增为 initial merchant，category=Gambling |
+| 把赌博网站名放入 catch_all 或 initial | 走 3.1-G 流程：查 `gambling_rules.csv` → 新增 gambling institution 行 |
 | 把在线服务平台名放入 catch_all | 新增为 initial merchant，category 按 illion 标签确定 |
 | 跳过 merchant_kb 查询直接生成 catch_all 规则 | **必须**先查 merchant_kb |
 | 看到 `pattern_type=merchant` 还分配到非 initial 引擎 | pattern_type 已经是明确信号，直接走 initial 流程 |
@@ -175,9 +250,13 @@ illion 标签是半自动标注，不是 100% 准确的 ground truth。使用策
 **判断流程（强制，每条 gap pattern 必须走完）**：
 
 ```
+Step 0: 这是赌博/博彩平台吗？（pattern_type=gambling，或文本含 BET/CASINO/POKIES/LOTTO 等）
+  ├─ 是 → 走下面的 3.1-G 流程（不进 merchant_kb！）
+  └─ 否 → 继续 Step 1
+
 Step 1: 这是什么？
   ├─ 具体商户名/品牌名/平台名 → 继续 Step 2
-  │   例: PLAYTKA, GARETON BV, BETR, PUNTIQ, AVIAGAMES, COURTNEY TIESTO
+  │   例: GARETON BV, AVIAGAMES, COURTNEY TIESTO
   │   例: KAMBALDA VILLAGE, DORSETT GOLD COAST HOTEL, CECIL HOTEL
   │   信号: pattern_type=merchant, 或者 pattern 中包含唯一标识名称
   │
@@ -195,15 +274,42 @@ Step 3: 根据查询结果采取行动：
   └─ 未找到 → 写入 reviews/<date>/initial_candidates.csv（新增商户）
 ```
 
+**3.1-G 博彩商户流程（与上面并列，不要混用）**：
+
+```
+Step G1: 确认真实性（同下面的三步验证）
+Step G2: 查 gambling_rules.csv 的 institution 行（1,822 条商户）
+  python scripts/search_merchant.py --merchant-file raw/gambling_rule/gambling_rules.csv \
+      --search "<关键名称>" --fuzzy
+  # 该文件表头是 rule_name/pattern，脚本会按角色自动识别（不需要 --field）
+  # 不加 --fuzzy 只做整串相等匹配，"MINDIL" 这类片段要加 --fuzzy 才能命中
+Step G3: 根据查询结果采取行动：
+  ├─ 找到该商户 → 若 keyword 变体不全，在 institution 行的 pattern 列补 `|` 分隔的新变体
+  └─ 未找到 → 写入 reviews/<date>/gambling_candidates.csv，一行 institution 行：
+       rule_name=<商户名>, category=Gambling, pattern=<变体1|变体2>, match_type=keyword,
+       confidence=0.95, counterparty=<商户名>, source=institution
+```
+
 **反面教材**：
 
 ```
 ❌ 错误：PLAYTKA 是赌博平台 → catch_all keyword: PLAYTKA → Gambling
    错因：PLAYTKA 是品牌名，catch_all 只收通用描述词。
-✅ 正确：查 merchant_kb → 未找到 → 新增 initial merchant: PLAYTKA, keywords=PLAYTKA, category=Gambling
+✅ 正确：gambling_candidates.csv institution 行: rule_name=PLAYTKA, pattern=PLAYTKA,
+        match_type=keyword, confidence=0.95, counterparty=PLAYTKA, source=institution
 
 ❌ 错误：GARETON BV → catch_all keyword: GARETON → Gambling
-✅ 正确：查 merchant_kb → 未找到 → 新增 initial merchant: GARETON BV, keywords=GARETON, category=Gambling
+✅ 正确：gambling_candidates.csv institution 行: rule_name=GARETON BV, pattern=GARETON,
+        match_type=keyword, confidence=0.95, counterparty=GARETON BV, source=institution
+   （2026-09-02 起博彩商户不再进 merchant_kb —— 见阶段三 3.0 的说明）
+
+❌ 错误：BET365 → initial_candidates.csv, category=Gambling
+   错因：initial 认领的行仍会被 income/liability 覆盖，博彩派彩会被打成 Wages。
+✅ 正确：gambling_candidates.csv（gambling 的认领对 income/liability 是终局）
+
+✅ 正确（通用博彩词）：SPORTSBET 是通用下注描述而非具体商户 → gambling_candidates.csv
+   rule 层行: rule_name=<描述性名>, category=Gambling, pattern=SPORTSBET,
+   match_type=keyword, confidence=0.75, counterparty=-, source=rule
 
 ✅ 正确（通用文本）：INTEREST PAID 是通用利息描述 → 决策树: 入账类 → all_other_credit
 ```
@@ -239,12 +345,13 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
 | **initial** | 具体商户名/品牌名的识别 | 通用关键词 |
 | **transfer** | 仅 Internal Transfer / External Transfers | Gambling、Entertainment 等非转账分类 |
 | **dishonour** | 银行拒付/退票消息 | — |
+| **gambling** | 赌博/博彩平台（博彩公司、赌场、彩票、下注） | 已被 transfer/initial/dishonour 认领的行（rule 层让位） |
 | **income** | 工资/Centrelink 等收入（需金额阈值） | 不满足金额阈值的文本 |
 | **liability** | 贷款还款、信用卡还款、债务催收等 | 已被 income 分类的交易 |
 | **all_other_credit** | 退款/返现/报销/**利息**等杂项入账 | 非入账类交易 |
 | **fee** | 各类银行/账户费用 | — |
 | **rent** | 房租/租金相关交易（RENT、TENANCY、LANDLORD、REAL ESTATE 等关键词） | 已被 income/liability 分类的交易（orchestrator 已排除） |
-| **catch_all** | **仅**通用描述性关键词（非商户名），**且必须是其他 8 个引擎都无法处理的** | 任何具体商户名/品牌名；能被其他引擎处理的 |
+| **catch_all** | **仅**通用描述性关键词（非商户名），**且必须是其他 9 个引擎都无法处理的** | 任何具体商户名/品牌名；能被其他引擎处理的 |
 
 **🚨 catch_all 硬性前置检查（分配任何规则到 catch_all 前必须通过）**：
 
@@ -266,20 +373,25 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
 | **initial** | `clean_text()`: 仅 `[A-Z0-9 ]` | **大写** | Aho-Corasick 全词 + 最长胜出 | keyword 不能是 STOPWORDS 独立 token（97个），每商户最多50变体，`Financial Institutions` 整行被过滤；**写入 CSV 的 keyword 仍须大写仅 [A-Z0-9 ]**（引擎端加载已不再 clean_text） |
 | **transfer** | `lower().strip()` | **小写** | regex 按 priority 第一匹配 | **regex 必须用小写**，dr_cr 列可选（debit/credit/空），对手方是子串匹配非全词 |
 | **dishonour** | 无预处理 | 不敏感(flags) | keyword(re.escape) OR regex+required_terms(AND) | keyword 自动 `re.escape` 转义特殊字符 |
+| **gambling** | **双层**：institution 层 `clean_text_with_channel_prefix()`；rule 层 `clean_text()` | 大写 | institution: Aho-Corasick 全词+最长胜出；rule: keyword(全词) OR regex，最高 confidence 胜出 | category 恒为 `"Gambling"`；institution 行是 1,822 个博彩商户（2026-09-02 从 merchant_kb 搬出），rule 行 16 条通用关键词；**rule 层走 `exclude_prior_claimed` 对前置认领让位**；其认领对 income/liability 是终局 |
 | **income** | `clean_text_with_seams()` 大写 | 大写 | 仅 regex + 金额阈值 + 行为特征 | **不是纯文本匹配**，低于 $100 除非有工资历史否则不触发；18 个 pattern_group（含 transfer_from/pay_signal/gig_* 等新组） |
 | **liability** | `upper().strip()` | 大写 | 多格式(边界非\b/regex/条件) | counterparty 边界是 `(?<![A-Za-z])...(?!A-Za-z)`（**不是 \b**，数字可穿透），credit_card 的 keyword 列实际是 regex 且**只填充未认领行**，home_loan 是 Format A 12 列，stream_id 最终统一为 `loan_NNN` |
 | **all_other_credit** | 无预处理 | 不敏感(flags) | **仅 keyword** (re.escape) | **regex 模式未实现**，required_terms 被忽略，只处理入账(credit) |
 | **fee** | 仅压缩空格 | **不敏感(IGNORECASE)** | regex 第一匹配，CSV动态加载 | **自 2026-08-20 起大小写不敏感**，category 仅两个值: `"fee"`(→"Fees") 和 `"Overdrawn"`，zero_amount_reject/unclassified_only/dr_cr 机制 |
-| **rent** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，category 恒为 `"Rent"`，orchestrator 已排除 income/liability 行 |
+| **rent** | **双层**：institution 层 `clean_text_with_channel_prefix()`；rule 层 `clean_text()` | 大写 | institution: Aho-Corasick 全词+最长胜出；rule: keyword(全词) OR regex，最高 confidence 胜出 | institution 行 21,794 个租赁商户、rule 行 15 条通用规则（**7 列** schema，含 `counterparty`/`source`），keyword 必须大写仅含 `[A-Z0-9 ]`，category 恒为 `"Rent"`，orchestrator 已排除 income/liability 行 |
 | **catch_all** | `clean_text()` 大写 | 大写 | keyword(全词) OR regex，**最高 confidence 胜出** | keyword 必须大写仅含 `[A-Z0-9 ]`，confidence 建议 0.55-0.90 |
 
 **跨引擎关键交互**（来自 `orchestrator.py`）：
 - initial 的 "Financial Institutions"/"Debt Collection"/"Debt Consolidation" 在 pipeline 中被清除，由 liability 兜底
 - liability 排除已被 income 分类为 Wages/Centrelink 的行
 - rent 排除已被 income/liability 认领的行（orchestrator 层预过滤）
+- **gambling 的认领对 income/liability 是终局**：orchestrator 丢弃这两个引擎在 gambling
+  已认领行上的预测（唯一一处「先执行的引擎反过来压住后执行的」，避免博彩派彩被重打成 Wages）
+- gambling 的 rule 层走 `exclude_prior_claimed`，对 transfer/initial/dishonour 的认领让位 ——
+  商户名若已进 merchant_kb，再加 gambling rule 规则不会有任何效果
 - all_other_credit 可以覆盖 "External Transfers"
 - income_engine 复用 initial_engine 的 cached automaton 做 KB counterparty 查找
-- 后执行的引擎总是覆盖前面的，**不管 confidence 高低**
+- 后执行的引擎总是覆盖前面的，**不管 confidence 高低**（gambling → income/liability 是唯一例外）
 
 ---
 
@@ -310,6 +422,8 @@ python scripts/search_merchant.py --search "BETR" --field keywords          # ke
    - 退款/返现/利息 → all_other_credit_engine
    - 费用 → fee_engine
    - 房租/租金关键词（RENT、TENANCY、LANDLORD、REAL ESTATE 等）→ rent_engine
+   - 赌博/博彩（BET、CASINO、POKIES、LOTTO、下注平台）→ gambling_engine
+     （商户名 → institution 行；通用词 → rule 行）
    - 通用消费关键词（非商户名）→ catch_all_engine
 
 5. 我有多确定不会误伤？（宁可漏判不误判）
@@ -475,10 +589,12 @@ for _, row in updates.iterrows():
 ⚠️ **生成规则前必读**：CLAUDE.md 详细记录了每个引擎的文本归一化方式、匹配逻辑和多匹配策略。关键注意：
 
 - **文本归一化对齐**：keyword 规则需确认匹配环境是 `clean_text()`（大写 [A-Z0-9]）还是原始文本
-- **fee_engine 保留大小写**：`^MONTHLY\s+FEE$` ≠ `^monthly fee$`
+- **fee_engine 大小写不敏感**（自 2026-08-20 起）：`^MONTHLY\s+FEE$` 也能匹配 `monthly fee`
 - **all_other_credit 只用 keyword**：regex 规则被加载但不会匹配
 - **收入不是简单关键词匹配**：需金额阈值 + payer_key + 频率模式
 - **transfer 只输出 Internal Transfer / External Transfers**
+- **rent / gambling 是 7 列双层引擎**：`source=institution` 行填商户变体（match_type 必须 keyword、confidence 0.95、counterparty=商户名），`source=rule` 行填通用关键词（counterparty 填 `-`）
+- **gambling 的 rule 层对前置认领让位**：若商户名已命中 merchant_kb，往 gambling rule 层加规则不会有任何效果 —— 这类必须走 institution 行
 
 新增约束：
 - 如果 illion 标签存在且与 pattern 语义一致 → 直接采纳 illion category
@@ -547,7 +663,7 @@ AI 在阶段三结束后打印预筛摘要：
 python scripts/validate_candidates.py --review_dir reviews/<date>/
 ```
 
-验证内容：正则语法、CSV 列匹配、已有规则重叠、引擎级约束校验（transfer 用小写、catch_all 用大写、all_other_credit 不用 regex、fee category 合法值等）。
+验证内容：正则语法、CSV 列匹配、已有规则重叠、引擎级约束校验（transfer 用小写、catch_all 用大写、all_other_credit 不用 regex、fee category 合法值、rent/gambling 的 institution 行变体与 match_type 等）。
 
 每条约束标注严重程度：**ERROR**（规则不可用）/ **WARNING**（可能不工作）/ **INFO**（最佳实践建议）。
 
@@ -745,7 +861,12 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
 
 - **dishonour / all_other_credit**：`rule_type, pattern, required_terms`
 - **fee**：`priority, rule_name, category, pattern, counterparty, match_type, zero_amount_reject, unclassified_only, dr_cr, description`（10 列；大小写不敏感；unclassified_only=true 只处理未分类行；dr_cr 可填 credit/debit 限方向）
-- **rent**：`rule_name, category, pattern, match_type, confidence`（category 恒为 `Rent`；keyword 全大写仅 `[A-Z0-9 ]`，全词匹配；regex 在 clean_text 后匹配；最高 confidence 胜出）
+- **rent / gambling**（双层引擎，同构 **7 列**）：`rule_name, category, pattern, match_type, confidence, counterparty, source`
+  - `source=rule`：通用关键词，keyword 全大写仅 `[A-Z0-9 ]`（全词匹配）或 regex（在 `clean_text()` 后匹配），最高 confidence 胜出，counterparty 填 `-`
+  - `source=institution`：特定商户，`pattern` 列是 `|` 分隔的 keyword 变体（同 merchant_kb 的 keywords 列），match_type 必须是 keyword，confidence 固定 0.95，counterparty = 商户名
+  - `category` 列恒为 `Rent` / `Gambling`（引擎输出硬编码，该列仅作一致性占位）
+  - confidence：rent rule 层 0.75–0.90、gambling rule 层 0.70–0.90；institution 层两者都固定 0.95
+  - **gambling 与 rent 的行为差异**：gambling 的 rule 层走 `exclude_prior_claimed`（对 transfer/initial/dishonour 的认领让位，rent 的 rule 层可重新认领）；gambling 的认领对 income/liability 是**终局**
 - **catch_all**：`rule_name, category, pattern, match_type, confidence`
 - **income**：`pattern_group, pattern, match_type, description`
 - **liability**（多文件引擎，必须指定 `target_file`）：

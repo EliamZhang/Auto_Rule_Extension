@@ -23,6 +23,10 @@ reviews/*
 baseline/*
 !baseline/.gitkeep
 
+# Assessment reports (generated per run)
+reports/*
+!reports/.gitkeep
+
 # Input data (user-managed)
 input/*
 !input/.gitkeep
@@ -30,6 +34,9 @@ input/*
 # Backup files
 *.bak
 raw/**/*.bak
+
+# sync_upstream.py 的上游缓存（blobless 裸仓库，只有 commit/tree，无文件正文）
+.upstream_cache/
 
 # Monitor artifacts
 scripts/.monitor/

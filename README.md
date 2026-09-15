@@ -1,6 +1,6 @@
 # Auto Rule Extension
 
-基于 Claude Code 的智能规则维护系统，为 [finv_category_V2](https://github.com/EliamZhang/finv_category_V2) 交易分类流水线的 9 个引擎自动发现并补充分类规则。
+基于 Claude Code 的智能规则维护系统，为 [finv_category_V2](https://github.com/EliamZhang/finv_category_V2) 交易分类流水线的 10 个引擎自动发现并补充分类规则。
 
 ## 解决的问题
 
@@ -50,11 +50,12 @@
 
 | 优先级 | 引擎 | 规则文件数 | 职责 |
 |--------|------|-----------|------|
-| 1 | initial | 1 | 商户名精确匹配 (~9,000 条) |
-| 100 | transfer | 8 | 转账识别 + 赌博排除 |
+| 1 | transfer | 8 | 转账识别（含博彩/放贷配对排除） |
+| 10 | initial | 1 | 商户名精确匹配（874,600 商户） |
 | 150 | dishonour | 1 | 拒付/退票检测 |
-| 200 | income | 1 | 工资、福利等收入 |
-| 300 | liability | 7 | 贷款、信用卡还款 |
+| 180 | gambling | 1 | 赌博/博彩识别（双层：1,822 商户 + 16 通用关键词） |
+| 200 | income | 2 | 工资、福利等收入 |
+| 300 | liability | 8 | 贷款、信用卡还款 |
 | 400 | all_other_credit | 1 | 退款、返现等杂项入账 |
 | 500 | fee | 1 | 各类费用识别 |
 | 800 | rent | 1 | 房租/租金识别 |
@@ -66,6 +67,8 @@
 Auto_Rule_Extension/
 ├── scripts/
 │   ├── common.py              ← 共享工具模块
+│   ├── sync_upstream.py       ← 同步层 1：GitHub → raw/（HTTPS 直取，不经过 finv）
+│   ├── sync_rules.py          ← 同步层 2：finv 工作副本 ↔ raw/（只拉不推）
 │   ├── analyze_gaps.py        ← 统计层：发现高频未覆盖模式
 │   ├── label_compare.py       ← 质检层：illion vs finv 分类差异报告
 │   ├── validate_candidates.py ← 验证层：语法+Schema+值校验
@@ -73,14 +76,28 @@ Auto_Rule_Extension/
 │   ├── test_rules.py          ← 测试层：确认规则实际表现
 │   └── apply_rules.py         ← 执行层：写入规则到 raw/
 ├── raw/                       ← 各引擎规则的本地副本
+├── modules/                   ← 合并进来的运维模块
+│   ├── merchant_kb/           ← ABR XML → merchant_kb.csv 构建流水线
+│   ├── assessment/            ← 分类性能报告生成（md/docx/pdf/图表）
+│   └── liability_enrich/      ← 放贷商缺口发现 + 候选验证
 ├── config.json                ← 引擎定义、分析参数、分类关键词
 ├── CLAUDE.md                  ← Claude Code 项目上下文
-├── SKILL.md                   ← Skill 入口（指向 .claude/skills/）
-├── .claude/skills/             ← Claude Code Skill 定义
+├── .claude/skills/            ← Claude Code Skill 定义（见下表）
 ├── input/                     ← 数据入口（.xlsx，不入库）
 ├── reviews/                   ← 每次运行产出（不入库）
+├── reports/                   ← modules/assessment 的报告产物（不入库）
 └── baseline/                  ← 基线快照（不入库）
 ```
+
+## Skills
+
+| Skill | 用途 |
+|-------|------|
+| `/auto-rule-extension` | 10 引擎规则发现与补充（主链路） |
+| `/liability-enrichment` | 联网核实疑似放贷商 → liability 候选规则 |
+| `/merchant-kb-maintenance` | merchant_kb 构建/清洗/合并/校验 |
+| `/classify-merchants` | 新商户联网分类（写 `category` 列） |
+| `/performance-report` | 出分类性能报告（md/docx/pdf/图表） |
 
 ## 快速开始
 
@@ -93,6 +110,11 @@ pip install pandas openpyxl
 ### 运行完整流程
 
 ```bash
+# 0. 规则同步（分析前必做 —— 拿过期规则做分析会得出错误候选）
+python scripts/sync_upstream.py            # GitHub → raw/（HTTPS 直取，不经过 finv）
+python scripts/sync_rules.py status        # 看 raw/ 与 finv 的漂移
+python scripts/sync_rules.py pull          # 有「finv 领先」则拉（自动 .bak 备份）
+
 # 1. 保存基线（在分析之前，保留原始分类快照）
 python scripts/baseline.py save \
     --input input/classification_report.xlsx \
@@ -137,7 +159,9 @@ python scripts/apply_rules.py \
     --sync_to ../finv_category_V2/
 ```
 
-> **注意**：`raw/initial_rule/merchant_kb.csv` 文件较大（~2.5M 行），未纳入 Git 版本控制。首次使用时需从 finv_category_V2 项目复制该文件到 `raw/initial_rule/` 目录。
+> **注意**：`raw/initial_rule/merchant_kb.csv`（74 MB）首次使用时会由
+> `sync_upstream.py` 从上游下载。它体积大但**已纳入 Git**（`.git` 因此膨胀到 145 MB），
+> 且同时是 `modules/merchant_kb` 的产物 —— 「把 KB 移出 git 并清理历史」是已识别但尚未执行的决定。
 
 ## 设计原则
 

@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Search merchant_kb.csv for merchant names or keywords.
+Search a rule CSV for merchant names or keywords.
 
-merchant_kb.csv is ~2.5M rows / 241MB. This script uses grep (subprocess)
-for sub-second pre-filtering, then parses only matched lines.
+默认搜 merchant_kb.csv（~2.5M 行 / 241MB），用 grep（subprocess）做秒级预筛，
+只解析命中的行。`--merchant-file` 可指向任意规则 CSV —— 列名按角色自动识别：
+名称列取 `merchant_name` / `rule_name` / `counterparty`，关键词列取 `keywords` / `pattern`。
+因此 `raw/gambling_rule/gambling_rules.csv`（rule_name + pattern）也能直接搜。
 
 Usage:
     python scripts/search_merchant.py --search "DORSETT GOLD COAST HOTEL" --diagnose
     python scripts/search_merchant.py --search "BETR" --diagnose
     python scripts/search_merchant.py --search "LAVERTON" --fuzzy --max-results 20
-    python scripts/search_merchant.py --search "Naked for Satan" --field merchant_name
+    python scripts/search_merchant.py --search "Naked for Satan" --field name
     python scripts/search_merchant.py --search "BETR" --json
+    python scripts/search_merchant.py --search "MINDIL" \
+        --merchant-file raw/gambling_rule/gambling_rules.csv --field all
 """
 
 import argparse
@@ -27,6 +31,24 @@ from pathlib import Path
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+# 列名按角色识别：不同规则 CSV 的表头不同（merchant_kb 用 merchant_name/keywords，
+# gambling_rules.csv 等 rule 风格 CSV 用 rule_name/pattern）。
+_NAME_COLUMNS = ("merchant_name", "rule_name", "counterparty")
+_KEYWORD_COLUMNS = ("keywords", "pattern")
+
+
+def read_header(filepath: str) -> list[str]:
+    """读文件第一行作为表头（BOM 由 utf-8-sig 吃掉）。"""
+    with open(filepath, "r", encoding="utf-8-sig") as f:
+        return next(csv.reader(io.StringIO(f.readline().strip())))
+
+
+def resolve_columns(header: list[str]) -> tuple[str | None, str | None]:
+    """(名称列, 关键词列)。某个角色在该文件里没有对应列则为 None。"""
+    name_col = next((c for c in _NAME_COLUMNS if c in header), None)
+    kw_col = next((c for c in _KEYWORD_COLUMNS if c in header), None)
+    return name_col, kw_col
 
 
 def grep_file(filepath: str, pattern: str, ignore_case: bool = True) -> list[str]:
@@ -101,8 +123,9 @@ def search(
     min_score: float = 0.6,
 ) -> tuple[list[dict], int, int]:
     """
-    Search merchant_kb.csv using grep + parse.
+    Search a rule CSV using grep + parse.
     Returns (matching_rows, total_lines_approx, empty_category_count).
+    `field` 取值 "name" / "keywords" / "all"，角色由文件表头决定（见 resolve_columns）。
     """
     # Get approximate total lines for stats (fast: wc -l)
     total = 0
@@ -116,7 +139,13 @@ def search(
     except Exception:
         total = 2_500_000  # fallback estimate
 
-    term_upper = term.upper().strip()
+    header = read_header(filepath)
+    name_col, kw_col = resolve_columns(header)
+    if name_col is None and kw_col is None:
+        raise ValueError(
+            f"文件没有可搜索的列：{filepath}（表头 {header}）—— "
+            f"需要 {_NAME_COLUMNS} 或 {_KEYWORD_COLUMNS} 之一"
+        )
 
     # Strategy: grep for the term, then parse and score
     lines = grep_file(filepath, term)
@@ -128,14 +157,8 @@ def search(
     if not lines:
         return [], total, 0
 
-    # Parse matched lines (first line is CSV header from grep output)
-    # Re-read header from file
-    with open(filepath, "r", encoding="utf-8-sig") as f:
-        header_line = f.readline().strip()
-
-    header = next(csv.reader(io.StringIO(header_line)))
-    # Parse only matched lines (exclude header if grep included it)
-    data_lines = [l for l in lines if not l.startswith("merchant_name,")]
+    header_line = ",".join(header)
+    data_lines = [l for l in lines if l.strip() != header_line]
     if not data_lines:
         return [], total, 0
 
@@ -145,8 +168,8 @@ def search(
     results = []
     empty_cat = 0
     for row in rows:
-        merchant = (row.get("merchant_name") or "").upper()
-        keywords = (row.get("keywords") or "").upper()
+        name = (row.get(name_col) or "").upper() if name_col else ""
+        keywords = (row.get(kw_col) or "").upper() if kw_col else ""
         category = (row.get("category") or "").strip()
         if not category:
             empty_cat += 1
@@ -154,19 +177,18 @@ def search(
         best_score = 0.0
         match_field = None
 
-        if field in ("merchant_name", "all"):
-            s = score_match(term, merchant)
+        if name_col and field in ("name", "all"):
+            s = score_match(term, name)
             if s > best_score and s >= (0.0 if not fuzzy else min_score):
                 best_score = s
-                match_field = "merchant_name"
+                match_field = name_col
 
-        if field in ("keywords", "all"):
-            kw_list = [k.strip() for k in keywords.split("|")]
-            for kw in kw_list:
+        if kw_col and field in ("keywords", "all"):
+            for kw in [k.strip() for k in keywords.split("|")]:
                 s = score_match(term, kw)
                 if s > best_score and s >= (0.0 if not fuzzy else min_score):
                     best_score = s
-                    match_field = "keywords"
+                    match_field = kw_col
 
         if not fuzzy and best_score >= 1.0:
             results.append({**row, "_match_field": match_field, "_score": best_score})
@@ -179,16 +201,16 @@ def search(
 
 def _fallback_scan(filepath, term, field, fuzzy, max_results, min_score):
     """Fallback: streaming Python scan when grep is unavailable."""
-    term_upper = term.upper().strip()
+    name_col, kw_col = resolve_columns(read_header(filepath))
     results = []
     total = 0
     empty_cat = 0
 
     with open(filepath, "r", encoding="utf-8-sig") as f:
-        for row in reader:
+        for row in csv.DictReader(f):
             total += 1
-            merchant = (row.get("merchant_name") or "").upper()
-            keywords = (row.get("keywords") or "").upper()
+            name = (row.get(name_col) or "").upper() if name_col else ""
+            keywords = (row.get(kw_col) or "").upper() if kw_col else ""
             category = (row.get("category") or "").strip()
             if not category:
                 empty_cat += 1
@@ -196,16 +218,16 @@ def _fallback_scan(filepath, term, field, fuzzy, max_results, min_score):
             best = 0.0
             mf = None
 
-            if field in ("merchant_name", "all"):
-                s = score_match(term, merchant)
+            if name_col and field in ("name", "all"):
+                s = score_match(term, name)
                 if s > best and s >= (0.0 if not fuzzy else min_score):
-                    best, mf = s, "merchant_name"
+                    best, mf = s, name_col
 
-            if field in ("keywords", "all"):
+            if kw_col and field in ("keywords", "all"):
                 for kw in [k.strip() for k in keywords.split("|")]:
                     s = score_match(term, kw)
                     if s > best and s >= (0.0 if not fuzzy else min_score):
-                        best, mf = s, "keywords"
+                        best, mf = s, kw_col
 
             if mf and best >= (1.0 if not fuzzy else min_score):
                 results.append({**row, "_match_field": mf, "_score": round(best, 3)})
@@ -216,13 +238,15 @@ def _fallback_scan(filepath, term, field, fuzzy, max_results, min_score):
 
 def diagnose(filepath: str, term: str) -> dict:
     """Full diagnosis: search and generate recommendation."""
-    term_upper = term.upper().strip()
+    name_col, kw_col = resolve_columns(read_header(filepath))
+    name_col = name_col or "rule_name"
+    kw_col = kw_col or "pattern"
 
     # Step 1: exact search
     exact_results, total, empty_cat = search(filepath, term, field="all", fuzzy=False, max_results=5)
 
-    exact_merchant = [r for r in exact_results if r.get("_match_field") == "merchant_name"]
-    exact_keyword = [r for r in exact_results if r.get("_match_field") == "keywords"]
+    exact_merchant = [r for r in exact_results if r.get("_match_field") == name_col]
+    exact_keyword = [r for r in exact_results if r.get("_match_field") == kw_col]
 
     # Step 2: fuzzy only if no exact
     fuzzy_results = []
@@ -233,6 +257,8 @@ def diagnose(filepath: str, term: str) -> dict:
         "search_term": term,
         "total_merchants": total,
         "empty_category_count": empty_cat,
+        "name_column": name_col,
+        "keyword_column": kw_col,
         "exact_merchant_match": len(exact_merchant) > 0,
         "exact_keyword_match": len(exact_keyword) > 0,
         "exact_matches": exact_merchant + exact_keyword,
@@ -245,10 +271,10 @@ def diagnose(filepath: str, term: str) -> dict:
         has_cat = bool((m.get("category") or "").strip())
         diag["recommendation"] = {
             "action": "merchant_exists_check_keywords",
-            "merchant_name": m["merchant_name"],
+            "merchant_name": m[name_col],
             "has_category": has_cat,
             "category": m.get("category", ""),
-            "keywords": m.get("keywords", ""),
+            "keywords": m.get(kw_col, ""),
             "category_source": m.get("category_source", ""),
             "note": (
                 "商户存在且有分类。检查 transaction text 中的写法是否被 keywords 覆盖；"
@@ -262,15 +288,15 @@ def diagnose(filepath: str, term: str) -> dict:
         has_cat = bool((m.get("category") or "").strip())
         diag["recommendation"] = {
             "action": "keyword_exists_check_why_not_matched",
-            "merchant_name": m["merchant_name"],
+            "merchant_name": m[name_col],
             "has_category": has_cat,
             "category": m.get("category", ""),
-            "keywords": m.get("keywords", ""),
+            "keywords": m.get(kw_col, ""),
             "note": (
-                "Keyword 已存在于 merchant_kb。排查为何 Aho-Corasick 未匹配"
+                "Keyword 已存在。排查为何未匹配"
                 "（text 中写法变体未被 keywords 覆盖？编码/截断？）。"
                 if has_cat
-                else "Keyword 存在但商户 category 为空，建议补充分类。"
+                else "Keyword 存在但 category 为空，建议补充分类。"
             ),
         }
     elif fuzzy_results:
@@ -278,9 +304,9 @@ def diagnose(filepath: str, term: str) -> dict:
         s = top.get("_score", 0)
         diag["recommendation"] = {
             "action": "similar_merchants_review",
-            "top_match": top["merchant_name"],
+            "top_match": top[name_col],
             "top_category": top.get("category", ""),
-            "top_keywords": top.get("keywords", ""),
+            "top_keywords": top.get(kw_col, ""),
             "score": s,
             "total_similar": len(fuzzy_results),
             "note": (
@@ -293,7 +319,7 @@ def diagnose(filepath: str, term: str) -> dict:
             "action": "new_merchant",
             "note": (
                 f"未找到匹配。这是一个新商户/品牌。建议：收集交易 text 中的常见写法"
-                f"作为 keywords，确定 category，添加到 merchant_kb.csv。"
+                f"作为 keywords，确定 category，添加到该规则 CSV。"
                 f"（库中 {empty_cat:,} 个商户 category 为空可补全）"
             ),
         }
@@ -322,9 +348,11 @@ def format_output(diag: dict, json_output: bool = False):
 
     term = diag["search_term"]
     rec = diag["recommendation"]
+    name_col = diag.get("name_column", "merchant_name")
+    kw_col = diag.get("keyword_column", "keywords")
 
     print(f"\n{'='*70}")
-    print(f"  merchant_kb search: \"{term}\"")
+    print(f"  rule csv search: \"{term}\"")
     print(f"{'='*70}")
 
     em = diag["exact_merchant_match"]
@@ -333,21 +361,21 @@ def format_output(diag: dict, json_output: bool = False):
     if em:
         m = diag["exact_matches"][0]
         cat = m.get("category", "").strip() or "(empty)"
-        print(f"\n  [OK] Exact merchant_name match")
-        print(f"     {m['merchant_name']}")
+        print(f"\n  [OK] Exact {name_col} match")
+        print(f"     {m[name_col]}")
         print(f"     category: {cat}  |  source: {m.get('category_source', '')}")
-        kws = m.get("keywords", "")
-        print(f"     keywords: {kws[:150]}{'...' if len(kws) > 150 else ''}")
+        kws = m.get(kw_col, "")
+        print(f"     {kw_col}: {kws[:150]}{'...' if len(kws) > 150 else ''}")
 
     if ek:
-        m = [x for x in diag["exact_matches"] if x.get("_match_field") == "keywords"]
+        m = [x for x in diag["exact_matches"] if x.get("_match_field") == kw_col]
         if m:
             m = m[0]
             cat = m.get("category", "").strip() or "(empty)"
-            print(f"\n  [OK] Exact keyword match")
-            print(f"     {m['merchant_name']}  ->  {cat}")
-            kws = m.get("keywords", "")
-            print(f"     keywords: {kws[:150]}{'...' if len(kws) > 150 else ''}")
+            print(f"\n  [OK] Exact {kw_col} match")
+            print(f"     {m[name_col]}  ->  {cat}")
+            kws = m.get(kw_col, "")
+            print(f"     {kw_col}: {kws[:150]}{'...' if len(kws) > 150 else ''}")
 
     fuzzy = diag["fuzzy_matches"]
     if fuzzy and not em and not ek:
@@ -355,7 +383,7 @@ def format_output(diag: dict, json_output: bool = False):
         for i, m in enumerate(fuzzy[:15]):
             cat = m.get("category", "").strip() or "(empty)"
             s = m.get("_score", 0)
-            print(f"     {i+1}. [{m.get('_match_field','?')}] {m['merchant_name']} -> {cat}  ({s:.0%})")
+            print(f"     {i+1}. [{m.get('_match_field','?')}] {m[name_col]} -> {cat}  ({s:.0%})")
 
     if not em and not ek and not fuzzy:
         print(f"\n  [NO] No match -- likely a new merchant")
@@ -364,27 +392,32 @@ def format_output(diag: dict, json_output: bool = False):
     print(f"     {rec['note']}")
 
     cat_pct = diag["empty_category_count"] / max(diag["total_merchants"], 1) * 100
-    print(f"\n  [stats] DB: {diag['total_merchants']:,} merchants, "
+    print(f"\n  [stats] DB: {diag['total_merchants']:,} rows, "
           f"{diag['empty_category_count']:,} without category ({cat_pct:.1f}%)")
     print(f"{'='*70}\n")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="搜索 merchant_kb.csv (~2.5M行)，使用 grep 加速",
+        description="搜索规则 CSV（默认 merchant_kb.csv）；列名按角色自动识别",
     )
     parser.add_argument("--search", "-s", required=True, help="搜索词")
     parser.add_argument(
         "--field", "-f",
-        choices=["merchant_name", "keywords", "all"],
+        choices=["name", "keywords", "all", "merchant_name"],
         default="all",
+        help="name=商户/规则名列（merchant_name 或 rule_name）；keywords=关键词列（keywords 或 pattern）；"
+             "merchant_name 是 name 的旧别名",
     )
     parser.add_argument("--fuzzy", action="store_true", help="模糊匹配")
     parser.add_argument("--diagnose", "-d", action="store_true", help="完整诊断")
     parser.add_argument("--max-results", type=int, default=30)
-    parser.add_argument("--merchant-file", help="merchant_kb.csv 路径")
+    parser.add_argument("--merchant-file", help="规则 CSV 路径（默认 raw/initial_rule/merchant_kb.csv）")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     args = parser.parse_args()
+
+    # 旧脚本用的是列名 'merchant_name'，保留为 name 的别名
+    field = "name" if args.field == "merchant_name" else args.field
 
     if args.merchant_file:
         merchant_file = args.merchant_file
@@ -396,29 +429,36 @@ def main():
         print(f"[NO] 找不到文件: {merchant_file}", file=sys.stderr)
         sys.exit(1)
 
-    if args.diagnose:
-        diag = diagnose(str(merchant_file), args.search)
-        format_output(diag, json_output=args.json)
-    else:
-        results, total, empty_cat = search(
-            str(merchant_file), args.search,
-            field=args.field, fuzzy=args.fuzzy, max_results=args.max_results,
-        )
-        if args.json:
-            clean = [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
-            print(json.dumps({"total": total, "empty_category": empty_cat, "matches": clean},
-                             ensure_ascii=False, indent=2))
+    try:
+        if args.diagnose:
+            diag = diagnose(str(merchant_file), args.search)
+            format_output(diag, json_output=args.json)
         else:
-            if not results:
-                print(f"\n[NO] 未找到 \"{args.search}\"")
-                print(f"   提示: 使用 --fuzzy 或 --diagnose\n")
+            results, total, empty_cat = search(
+                str(merchant_file), args.search,
+                field=field, fuzzy=args.fuzzy, max_results=args.max_results,
+            )
+            if args.json:
+                clean = [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
+                print(json.dumps({"total": total, "empty_category": empty_cat, "matches": clean},
+                                 ensure_ascii=False, indent=2))
             else:
-                print(f"\n[OK] {len(results)} 个匹配 (共 {total:,} 商户, {empty_cat:,} 缺分类):\n")
-                for r in results:
-                    cat = r.get("category", "").strip() or "(空)"
-                    print(f"   [{r.get('_match_field','?')}] {r['merchant_name']} → {cat}")
-                    kws = r.get("keywords", "")
-                    print(f"   keywords: {kws[:120]}{'...' if len(kws) > 120 else ''}\n")
+                if not results:
+                    print(f"\n[NO] 未找到 \"{args.search}\"")
+                    print(f"   提示: 使用 --fuzzy 或 --diagnose\n")
+                else:
+                    name_col, kw_col = resolve_columns(read_header(str(merchant_file)))
+                    name_col = name_col or "rule_name"
+                    kw_col = kw_col or "pattern"
+                    print(f"\n[OK] {len(results)} 个匹配 (共 {total:,} 行, {empty_cat:,} 缺分类):\n")
+                    for r in results:
+                        cat = r.get("category", "").strip() or "(空)"
+                        print(f"   [{r.get('_match_field','?')}] {r[name_col]} → {cat}")
+                        kws = r.get(kw_col, "")
+                        print(f"   {kw_col}: {kws[:120]}{'...' if len(kws) > 120 else ''}\n")
+    except ValueError as e:
+        print(f"[ERR] {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

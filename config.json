@@ -1,9 +1,15 @@
 {
   "rules_base_dir": "raw",
+  "finv_root": "../finv_category_V2",
+  "upstream": {
+    "url": "https://github.com/EliamZhang/ServiFlow-AI",
+    "branch": "main"
+  },
   "engine_priorities": {
     "initial": 10,
     "transfer": 1,
     "dishonour": 150,
+    "gambling": 180,
     "income": 200,
     "liability": 300,
     "all_other_credit": 400,
@@ -40,6 +46,15 @@
       "rule_files": ["dishonour_rules.csv"],
       "match_types": ["keyword", "regex"],
       "top_n_gaps": 50
+    },
+    "gambling": {
+      "engine_dir": "gambling_rule",
+      "finv_engine_dir": "gambling_engine",
+      "finv_rule_dir": "resources",
+      "rule_files": ["gambling_rules.csv"],
+      "match_types": ["keyword", "regex"],
+      "top_n_gaps": 100,
+      "note": "双层引擎（同 rent v2.0 机制）。institution 行（source=institution）是从 merchant_kb.csv 搬出来的 1,822 个 Gambling 商户，Aho-Corasick 全词匹配、最长 keyword 胜出；rule 行（source=rule）是原 catch_all 的 16 条通用赌博关键词，走 exclude_prior_claimed、最高 confidence 胜出。institution 层命中优先。priority=180，在 dishonour 之后、income 之前；其认领对 income/liability 是终局（orchestrator 丢弃这两个引擎在 gambling 已认领行上的预测）。"
     },
     "income": {
       "engine_dir": "income_rule",

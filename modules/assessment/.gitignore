@@ -1,0 +1,12 @@
+# 临时/锁文件
+~$*
+_*.docx
+_tmp_*.docx
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
+
+# 本地临时目录
+tmp/

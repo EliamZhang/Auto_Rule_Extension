@@ -88,11 +88,15 @@ ARE 与 ME 两份的逐行差异：共同 876,051 行，仅 ARE 有 228 行，�
 | # | 决策 | 理由 |
 |---|---|---|
 | D1 | 合并为**单一仓库**，ME/BPA 作为 `modules/` 子目录 | 消除 KB 多副本、报告手工拷贝；一次 commit 覆盖"改规则+改KB+改报告" |
-| D2 | KB 移出 git + `filter-repo` 清理历史 | 74 MB 二进制每次变更都让仓库 +74 MB；可回溯性由 `reviews/` + `baseline/` 保证 |
+| D2 | KB 移出 git + `filter-repo` 清理历史 — **暂缓**（2026-09-14 用户指示"暂时先不用管git"） | 74 MB 二进制每次变更都让仓库 +74 MB；可回溯性由 `reviews/` + `baseline/` 保证 |
 | D3 | `sync_rules.py` 做**三方对比**，且**只拉不推** | 漂移是双向的，无基线无法判定方向；推送必须走审批后的 `apply_rules.py --sync_to` |
 | D4 | liability 联网更新 = **发现新放贷商 + 补充已有 alias** | 用户明确范围 |
 | D5 | 联网结果**只自动发现，人工审批后写入** | 与项目铁律"任何规则写入操作前必须经过人工确认"一致 |
 | D6 | 实现形态为**混合**：脚本做数据侧，Claude Skill 做联网侧 | 与现有框架分工一致（`analyze_gaps.py` 出数据，Claude 生成规则） |
+| D7 | 合并方式采用**直接复制代码**，不做 `git subtree` / 历史迁移（2026-09-14 用户指示） | 用户要求本仓库保持独立，不与其他仓库的 git 发生关系 |
+
+> **D2/D7 的实施后果**：ME 与 BPA 的提交历史不会进入本仓库，`.git` 保持 145 MB。
+> 若日后需要瘦身或补齐历史，仍可按 §8 的阶段 1–2 补做。
 
 ---
 
@@ -132,9 +136,11 @@ D:/project/Auto_Rule_Extension/          ← 唯一 git 仓库
 │   │   └── merge_manual_entries.py  split_uncategorized.py  update_category.py
 │   │
 │   ├── assessment/                      BPA：分类性能评估与报告
-│   │   ├── CLAUDE.md
-│   │   ├── run_report.py                ★ 新增唯一入口
-│   │   └── generate_*.py                （8 个脚本原样迁入）
+│   │   ├── CLAUDE.md                    ★ 待补（BPA 原本没有）
+│   │   ├── .gitignore  input/  output/  （原样迁入）
+│   │   └── scripts/
+│   │       ├── run_report.py            ★ 新增唯一入口
+│   │       └── generate_*.py            （8 个脚本原样迁入）
 │   │
 │   └── liability_enrich/                ★ 新增：联网更新放贷商
 │       ├── CLAUDE.md

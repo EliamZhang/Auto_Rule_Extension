@@ -29,6 +29,8 @@ import pandas as pd
 from common import (
     load_config,
     load_category_catalog,
+    normalize_pattern_text,
+    read_transactions,
     resolve_rules_base,
     log,
     setup_logging,
@@ -36,51 +38,6 @@ from common import (
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-def _normalize_text(text: str, config: dict[str, Any]) -> str:
-    """Normalize a transaction description for frequency clustering."""
-    norm_cfg = config.get("analysis", {}).get("normalization", {})
-    text = str(text)
-
-    if norm_cfg.get("remove_dates", True):
-        text = re.sub(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b", " ", text)
-        text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", text)
-
-    if norm_cfg.get("remove_amounts", True):
-        text = re.sub(r"\$\s*\d+(?:[.,]\d{2})?", " ", text)
-        text = re.sub(r"\b\d+\.\d{2}\b", " ", text)
-
-    if norm_cfg.get("remove_numbers", True):
-        text = re.sub(r"\b\d{4,}\b", " ", text)
-        text = re.sub(r"\bV\d{4}\b", " ", text)
-
-    if norm_cfg.get("uppercase", True):
-        text = text.upper()
-
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def _read_input(input_path: Path) -> pd.DataFrame:
-    """Read transactions from .xlsx or .csv, returning a unified DataFrame."""
-    suffix = input_path.suffix.lower()
-
-    if suffix in (".xlsx", ".xlsm", ".xls"):
-        xlsx = pd.ExcelFile(input_path)
-        if "transactions" in xlsx.sheet_names:
-            df = pd.read_excel(xlsx, sheet_name="transactions")
-        else:
-            df = pd.read_excel(xlsx, sheet_name=0)
-        log.info("Loaded .xlsx: %s rows, sheets: %s", f"{len(df):,}", xlsx.sheet_names)
-        return df
-
-    if suffix == ".csv":
-        df = pd.read_csv(input_path, encoding="utf-8-sig")
-        log.info("Loaded .csv: %s rows", f"{len(df):,}")
-        return df
-
-    raise ValueError(f"Unsupported input format: {suffix}. Expected .xlsx or .csv")
-
 
 def _load_existing_patterns(
     rules_base: Path, engine_id: str, engine_config: dict[str, Any], config: dict[str, Any]
@@ -131,7 +88,7 @@ def _classify_pattern_type(
 
     - 'merchant': specific business name → initial_engine (merchant_kb.csv)
     - 'generic': descriptive keyword → catch_all_engine
-    - 'gambling': betting/casino → transfer_engine (exclusion patterns)
+    - 'gambling': betting/casino → gambling_engine (gambling_rules.csv)
     - 'rent': rent/property keyword → rent_engine (rent_rules.csv)
     - 'ambiguous': needs Claude to decide
     """
@@ -204,7 +161,7 @@ def analyze_gaps(
 
     # 1. Load data
     project_root = Path(__file__).resolve().parent.parent
-    df = _read_input(input_path)
+    df = read_transactions(input_path)
     total = len(df)
     log.info("Total transactions: %s", f"{total:,}")
 
@@ -241,7 +198,7 @@ def analyze_gaps(
 
     for _, row in uncl.iterrows():
         raw_text = str(row.get("text", ""))
-        norm_text = _normalize_text(raw_text, config)
+        norm_text = normalize_pattern_text(raw_text, config)
 
         if len(norm_text) < min_len:
             continue
@@ -290,7 +247,7 @@ def analyze_gaps(
         if pattern_type == "merchant":
             target = "initial"
         elif pattern_type == "gambling":
-            target = "transfer"
+            target = "gambling"
         elif pattern_type == "rent" or illion_cat == "Rent":
             target = "rent"
         elif pattern_type == "generic":

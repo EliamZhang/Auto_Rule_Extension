@@ -188,46 +188,172 @@ def _check_catch_all(pattern: str, match_type: str, row: pd.Series) -> list[tupl
     return issues
 
 
-def _check_rent(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
-    """rent_engine: clean_text() → uppercase [A-Z0-9 ], keyword(全词) / regex, 最高 confidence 胜出.
+def _cell(row: pd.Series, column: str) -> str:
+    """取候选行某个单元格的文本。
 
-    Source: rent_engine/engine.py
+    空 CSV 字段会被 pandas 读成 NaN，`str(NaN)` == "nan" 是个非空字符串 ——
+    直接用 `str(row.get(...)).strip()` 判空永远判不出来，所以这里统一归一成空串。
+    """
+    if column not in row.index:
+        return ""
+    value = row.get(column)
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+def _check_institution_style(
+    pattern: str,
+    match_type: str,
+    row: pd.Series,
+    *,
+    label: str,
+    category: str,
+    conf_min: float,
+    conf_max: float,
+    institution_count: int,
+) -> list[tuple[str, str]]:
+    """双层 institution 引擎（rent v2.0 / gambling v1.0）共用的校验。
+
+    institution 层 (`source=institution`)：Aho-Corasick 全词匹配，**最长 keyword 胜出**。
+        pattern 列是 `|` 分隔的 keyword 变体表，**match_type 被忽略**（引擎一律按
+        literal keyword 处理）；confidence 列同样**不被读取**，引擎用代码常量
+        `INSTITUTION_CONFIDENCE = 0.95`。counterparty 取该行的 counterparty 列，
+        为空则回落到 rule_name。
+    rule 层 (`source=rule` 或该列缺省)：clean_text() → keyword(全词) / regex，
+        最高 confidence 胜出。
+    两层的文本侧都是 `[A-Z0-9 ]`（institution 层额外剥离通道前缀）。
+
+    Source: {rent,gambling}_engine/engine.py + classification_core/merchant_institution.py
     """
     issues = []
-    if match_type == "keyword":
-        if not pattern.isupper():
+
+    source = _cell(row, "source").lower()
+    is_institution = source == "institution"
+
+    # 加载器静默丢弃 rule_name / category / pattern 任一为空的行（load_rules 开头
+    # 的 continue），不报错——候选行缺字段时会无声消失。
+    missing = [c for c in ("rule_name", "category", "pattern") if c in row.index and not _cell(row, c)]
+    for column in missing:
+        issues.append((
+            "ERROR",
+            f"{label} 行缺少 {column}，load_rules() 会静默丢弃整行（不报错）。"
+        ))
+    if "pattern" in missing:
+        # pattern 为空时后面的字符集/match_type/confidence 检查都没有意义，
+        # 只会基于 "nan" 这个字符串报出误导性的「含特殊字符」。
+        return issues
+
+    if is_institution:
+        # institution 行的 pattern 是 `|` 分隔的变体表——`|` 是分隔符，不是关键词
+        # 的一部分，因此字符集检查必须**逐变体**做，否则每条 institution 行都会
+        # 被误报「含特殊字符」。
+        keywords = [v.strip() for v in pattern.split("|") if v.strip()]
+        if not keywords:
+            issues.append((
+                "ERROR",
+                f"{label} institution 行的 pattern 拆分后没有任何 keyword 变体。"
+            ))
+        for kw in keywords:
+            if not kw.isupper():
+                issues.append((
+                    "WARNING",
+                    f"{label} institution keyword '{kw}' 建议全大写，引擎先 clean_text() 再匹配。"
+                ))
+            if re.search(r"[^A-Z0-9 ]", kw):
+                issues.append((
+                    "ERROR",
+                    f"{label} institution keyword '{kw}' 含特殊字符，clean_text() 只保留 [A-Z0-9 ]。"
+                ))
+
+        # 引擎对 institution 行不看 match_type，pattern 一律按 `|` 分隔的 literal
+        # keyword 变体处理。写 regex 会变成一条匹配不到正则原文的死规则。
+        if match_type != "keyword":
+            issues.append((
+                "ERROR",
+                f"{label} institution 行的 match_type='{match_type}' 无效：引擎只按 keyword 处理，"
+                f"pattern 会被当成字面量插入自动机（regex 将永远匹配不到）。"
+            ))
+        if len(keywords) > 50:
             issues.append((
                 "WARNING",
-                "rent keyword 建议全大写，引擎使用 clean_text() 转大写后匹配。"
+                f"{label} institution 行有 {len(keywords)} 个 keyword 变体，超过 "
+                f"MAX_VARIANTS_PER_INSTITUTION=50，超出的会被静默截断。"
             ))
-        if re.search(r"[^A-Z0-9 ]", pattern):
+    else:
+        if match_type == "keyword":
+            if not pattern.isupper():
+                issues.append((
+                    "WARNING",
+                    f"{label} keyword 建议全大写，引擎使用 clean_text() 转大写后匹配。"
+                ))
+            if re.search(r"[^A-Z0-9 ]", pattern):
+                issues.append((
+                    "ERROR",
+                    f"{label} keyword 含特殊字符，clean_text() 只保留 [A-Z0-9 ]。"
+                ))
+        elif match_type == "regex" and re.search(r"[a-z]", pattern):
             issues.append((
-                "ERROR",
-                f"rent keyword 含特殊字符，clean_text() 只保留 [A-Z0-9 ]。"
+                "WARNING",
+                f"{label} regex: 引擎在 clean_text() 结果上匹配（全大写），小写字母可能匹配不到。"
             ))
-    if match_type == "regex" and re.search(r"[a-z]", pattern):
-        issues.append((
-            "WARNING",
-            "rent regex: 引擎在 clean_text() 结果上匹配（全大写），小写字母可能匹配不到。"
-        ))
+
     if "category" in row.index:
-        cat = str(row.get("category", "")).strip()
-        if cat and cat != "Rent":
+        cat = _cell(row, "category")
+        if cat and cat != category:
             issues.append((
                 "ERROR",
-                f"rent category='{cat}' 无效，必须是 'Rent'。"
+                f"{label} category='{cat}' 无效，必须是 '{category}'。"
             ))
+
     if "confidence" in row.index:
         try:
             conf = float(row["confidence"])
-            if conf > 0.90:
+        except (ValueError, TypeError):
+            conf = None
+        if conf is not None:
+            if is_institution:
+                # 引擎不读该列，恒用常量 0.95；写别的值不会改变行为，但会误导读者。
+                if abs(conf - 0.95) > 1e-9:
+                    issues.append((
+                        "WARNING",
+                        f"{label} institution confidence={conf}，但引擎对该层忽略此列、"
+                        f"恒用代码常量 0.95。现有 {institution_count:,} 条 institution 规则均写 0.95，"
+                        f"建议照写以保持一致。"
+                    ))
+            elif conf > conf_max or conf < conf_min:
                 issues.append((
                     "WARNING",
-                    f"rent confidence={conf} 偏高，现有规则范围约 0.70-0.90。"
+                    f"{label} confidence={conf} 超出 rule 层现有范围 {conf_min}-{conf_max}。"
                 ))
-        except (ValueError, TypeError):
-            pass
     return issues
+
+
+def _check_rent(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
+    """rent_engine v2.0 —— 双层结构，详见 _check_institution_style。"""
+    return _check_institution_style(
+        pattern, match_type, row,
+        label="rent", category="Rent",
+        conf_min=0.75, conf_max=0.90, institution_count=21794,
+    )
+
+
+def _check_gambling(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
+    """gambling_engine v1.0 —— 与 rent 同一套双层机制，但有两处行为差异：
+
+    * institution 行是**从 merchant_kb.csv 搬出来的** Gambling 商户（2026-09-02），
+      命中后还会让位给：fee/dishonour 的认领，或 initial 已用**不短于**本次命中的
+      keyword 认领的行（复刻搬迁前 KB 自动机跨全类别按长度排名的结果）。
+    * rule 层走 `exclude_prior_claimed`，**对所有更早引擎的认领让位**（rent 的
+      rule 层则可以重新认领）—— 因此新增 rule 行在 transfer/initial/dishonour
+      已认领的行上不会生效。
+    """
+    return _check_institution_style(
+        pattern, match_type, row,
+        label="gambling", category="Gambling",
+        conf_min=0.70, conf_max=0.90, institution_count=1822,
+    )
 
 
 def _check_fee(pattern: str, match_type: str, row: pd.Series) -> list[tuple[str, str]]:
@@ -354,6 +480,26 @@ def _check_liability(pattern: str, match_type: str, row: pd.Series) -> list[tupl
                 "liability counterparty: 引擎在 uppercase 文本上做边界匹配，"
                 "keyword 建议全大写。"
             ))
+        # loader 只读 `rule_type` 列，而本 CSV 的表头是 `match_type` —— 写
+        # match_type=regex 的行会被当 keyword 处理（转大写 + re.escape），
+        # 永远匹配不到。现有 CSV 里那条 `DT\.[A-Za-z0-9]+\s+Sunshine` 就是这样。
+        if match_type == "regex":
+            issues.append((
+                "ERROR",
+                "liability counterparty_keyword_rules.csv 没有 rule_type 列，"
+                "regex 行会被当 keyword 处理成死规则。要加 regex 必须先给 CSV 加列。"
+            ))
+        for variant in str(pattern).split(";"):
+            variant = variant.strip()
+            if not variant:
+                continue
+            if variant[0].isdigit():
+                issues.append((
+                    "ERROR",
+                    f"liability counterparty keyword 以数字开头（{variant!r}）："
+                    f"边界是 (?<![A-Za-z])...(?!A-Za-z) 而非 \\b，数字可穿透，"
+                    f"会误伤 '1{variant}' 这类文本。"
+                ))
     elif "credit_card_rules" in target_file:
         if pattern:
             try:
@@ -401,6 +547,7 @@ ENGINE_CONSTRAINT_VALIDATORS = {
     "catch_all": _check_catch_all,
     "fee": _check_fee,
     "rent": _check_rent,
+    "gambling": _check_gambling,
     "all_other_credit": _check_all_other_credit,
     "dishonour": _check_dishonour,
     "income": _check_income,

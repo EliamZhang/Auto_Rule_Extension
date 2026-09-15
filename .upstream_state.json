@@ -1,0 +1,140 @@
+{
+  "files": {
+    "all_other_credit_rule/all_other_credit_rules.csv": {
+      "content_sha256": "7a7ba8084ee19d473d3cb8850e735178d2d524d439acf7900fa39a875d92ed58",
+      "etag": "\"c5c99ebef6ac7ac506b7174fe2d4782d2bee72aa5a057960df5122f35a221fc3\"",
+      "repo_path": "all_other_credit_engine/resources/all_other_credit_rules.csv"
+    },
+    "catch_all_rule/catch_all_rules.csv": {
+      "content_sha256": "4726058722defb7ca602f6d7f9be25ed0fedd6ab9e06b6549f9afc1fb10f03d0",
+      "etag": "\"6b9e43465f78551e490531315c2eb238c1ccdef97394888520a26473aa460796\"",
+      "repo_path": "catch_all_engine/resources/catch_all_rules.csv"
+    },
+    "category_catalog.json": {
+      "content_sha256": "76637eb2ddd0cc661e90308afa29074fec816365386038eb4817f21843a3bd59",
+      "etag": "\"ff59db0c5b246501353c60a4cfd31b9b591fe38f0029c34e00cfe56eb0039459\"",
+      "repo_path": "configs/category_catalog.json"
+    },
+    "dishonour_rule/dishonour_rules.csv": {
+      "content_sha256": "172b3687161ffeb99b4e9ee3071d827d611cc9eb308c4f6afe864dd6f3a13f5c",
+      "etag": "\"9facb40dea9971d9db72cb115871d1bf39595da8814fa7c30bdcc43bf2e9c9e4\"",
+      "repo_path": "dishonour_engine/resources/dishonour_rules.csv"
+    },
+    "fee_rule/fee_classification_rules.csv": {
+      "content_sha256": "c3d8e2f42ac3953bc8b84278d0e524da72f30e8372493a26765f6fc3735d9670",
+      "etag": "\"bc12d55520334520b3ad79d303b8930e5503f2e00c9f1dea885b474e1270b19d\"",
+      "repo_path": "fee_engine/resources/fee_classification_rules.csv"
+    },
+    "gambling_rule/gambling_rules.csv": {
+      "content_sha256": "9344a67a7b31243938b4b354cfd8656fcdc33c493a3bccbfee446002439f3f95",
+      "etag": "\"7670bcd3f78458c20ac020021990f977a6a2ba9ba660fc8bd875a3e7fc3848c5\"",
+      "repo_path": "gambling_engine/resources/gambling_rules.csv"
+    },
+    "income_rule/income_config.csv": {
+      "content_sha256": "761645b1c0dfa89a55f44af8edd2d989a3722d81df45877b3eb1c9f1750b57d8",
+      "etag": "\"810eab6f11bb00c83c7f441c20840ba31be3861f02093f33c8baf2730a611fa4\"",
+      "repo_path": "income_engine/resources/income_config.csv"
+    },
+    "income_rule/income_pattern_rules.csv": {
+      "content_sha256": "17d61d51e21dda8086ef143f988e57c4085e3138b76193bd52b75eb0261dfb0d",
+      "etag": "\"ca832cc664dd091428792bf4dd6e1eef450257fdac685e17f1f014be4ff17ddb\"",
+      "repo_path": "income_engine/resources/income_pattern_rules.csv"
+    },
+    "initial_rule/merchant_kb.csv": {
+      "content_sha256": "485010e4306f51f14960b517c71fc8014e54f80f2f3f9a58bba60eb941979f29",
+      "etag": "\"c7bcc03cf6b90dcebd703359fd217872d10ed99d898d86b8a8160708f25658f3\"",
+      "repo_path": "initial_engine/merchant_kb.csv"
+    },
+    "liability_rule/bnpl_maximum_limits.csv": {
+      "content_sha256": "6b539caf325f5d7bfd4d455d468f2aeb7c15479451af363557f3d3be5a98a1aa",
+      "etag": "\"6d298f700423a0ae187382ba463bb061b7a7ec9396bf3fab2e7509ca08c5dfa4\"",
+      "repo_path": "liability_engine/resources/bnpl_maximum_limits.csv"
+    },
+    "liability_rule/counterparty_keyword_rules.csv": {
+      "content_sha256": "43a03c596ce462b9764de839b09c69d37eb5f79bc17d36b0650b30568eaf2116",
+      "etag": "\"e0a6930b7bac7ad716f4f4369b5fcacb5f48bcacb2304c4dfbf21d03e3cfe6dd\"",
+      "repo_path": "liability_engine/resources/counterparty_keyword_rules.csv"
+    },
+    "liability_rule/credit_card_rules.csv": {
+      "content_sha256": "f77b76ec195a5e3796543d21358d93b3ec33b07a06f024ee5bc80b104b4e36d4",
+      "etag": "\"228b9c965dfdac51606059ceecf43d9f633b99749e61de86c0a37c3dae50f45e\"",
+      "repo_path": "liability_engine/resources/credit_card_rules.csv"
+    },
+    "liability_rule/debt_collection_rules.csv": {
+      "content_sha256": "122b5579e150778022bb89e764914590e85451d7aa6e79366703c6422dbf5ca9",
+      "etag": "\"32b0e0d8fa8ec8f54b6eea8e5dafb83cb1e73ebe1dfbaf4815f36e3a321e3009\"",
+      "repo_path": "liability_engine/resources/debt_collection_rules.csv"
+    },
+    "liability_rule/debt_consolidation_rules.csv": {
+      "content_sha256": "c98a759347a84b181bcbef76d7fe8f5a232cfa220f1b68c47a28833b8b73eab7",
+      "etag": "\"7d424d2e427662cefe594658e2cddc2df01fc9b6720337267735a5ef79527a36\"",
+      "repo_path": "liability_engine/resources/debt_consolidation_rules.csv"
+    },
+    "liability_rule/dishonours_rules.csv": {
+      "content_sha256": "d2143a861fcbbf8cb0e1e084ed5250b2ee1f663ad407268c4e17156ff7cb59d3",
+      "etag": "\"5c4333cb4ae5946f5cba8fcf8800e2f8d75eb14394c59e560940a35ea794e2bc\"",
+      "repo_path": "liability_engine/resources/dishonours_rules.csv"
+    },
+    "liability_rule/home_loan_car_loan_rules.csv": {
+      "content_sha256": "18ad6123df0a1ccf11a0a654e81f444095a5c8b8ffe859e868bbdbad6a6dc56a",
+      "etag": "\"673d307890b74175cfee29dfbfaa7aed3e6d6f0194465e4ac6f92b15c9f8b112\"",
+      "repo_path": "liability_engine/resources/home_loan_car_loan_rules.csv"
+    },
+    "liability_rule/overdrawn_rules.csv": {
+      "content_sha256": "3827d4f1739c540d27df64a8470311f1b5d772dd3bebae2bb7d531e9bf94ba51",
+      "etag": "\"cb327a2b9afb7c99c2956abb8caa7d7f9b1d4d72d0796d3361ea42f9bdaf757f\"",
+      "repo_path": "liability_engine/resources/overdrawn_rules.csv"
+    },
+    "rent_rule/rent_rules.csv": {
+      "content_sha256": "ef1a250f8274b4ee15a1ff1743e0f39cda8d039fa22e42a2faa8e507dd713c95",
+      "etag": "\"7f7b6a9e4feacd2879a9990bad76ff1c8fc5b42e288d22757ed8ed553d0ed7fa\"",
+      "repo_path": "rent_engine/resources/rent_rules.csv"
+    },
+    "transfer_rule/transfer_counterparty_rules.csv": {
+      "content_sha256": "0d002a2f5405602755dc54d506ec048576319c6557a4c4c75742040eb50406d4",
+      "etag": "\"439ef2df318c5086f0936784d2399da1dcdce8ffeaa9276273ae1ca89a98abb1\"",
+      "repo_path": "transfer_engine/resources/transfer_counterparty_rules.csv"
+    },
+    "transfer_rule/transfer_external_high_confidence_rules.csv": {
+      "content_sha256": "856bc607b72e4157d3032d500e9c16b4aec4c0e0237cfee1fbf0690f3d5e5695",
+      "etag": "\"39476952d4a97d8a516a5a9db2efa02a227e51a2a9f47df763206a82b2f793e9\"",
+      "repo_path": "transfer_engine/resources/transfer_external_high_confidence_rules.csv"
+    },
+    "transfer_rule/transfer_external_medium_confidence_rules.csv": {
+      "content_sha256": "e97b910b4834e08cbbdf2622394784399880e7acc49f52a5913e2e1ea0c5a8bf",
+      "etag": "\"a8b7df81ae328a9c7c96d285c6a5c327b11b122b58d158970217644f85249e76\"",
+      "repo_path": "transfer_engine/resources/transfer_external_medium_confidence_rules.csv"
+    },
+    "transfer_rule/transfer_group_exclusion_patterns.csv": {
+      "content_sha256": "3ca7f3eb006a9bd54b1508902aae1486e901cf07c15e8ecc881237928a770f02",
+      "etag": "\"b587dfcb944838f8e711e691fa7781fbf87668c99eac3994b14847828d87c140\"",
+      "repo_path": "transfer_engine/resources/transfer_group_exclusion_patterns.csv"
+    },
+    "transfer_rule/transfer_indicator_patterns.csv": {
+      "content_sha256": "6da6628254a98396916d2d79f517b0cd9141a067fe5d0158a530431d8e6d87c7",
+      "etag": "\"0cd322a6e5aac4d7cbc2e6b5a0ee6a3fcbe9e87c229d9f2c417ed7f13d6364f3\"",
+      "repo_path": "transfer_engine/resources/transfer_indicator_patterns.csv"
+    },
+    "transfer_rule/transfer_internal_regex_rules.csv": {
+      "content_sha256": "38870fc5ceb7257596d38bd1136ba9bc5a8ce93e8cdabfbf450b29ce16632c6f",
+      "etag": "\"4975dd2d54511dac9e3c93d0ff8f9a7466bc0ccd58c6f5484cdc14bd94997a53\"",
+      "repo_path": "transfer_engine/resources/transfer_internal_regex_rules.csv"
+    },
+    "transfer_rule/transfer_pairing_exclusions.csv": {
+      "content_sha256": "75aac6793313756f8c9d2c25f75a3d783326fcafa140b1ef52bb8a2b1c0cc7f9",
+      "etag": "\"9b9f8c4afcfc7cdb150ab2d9a34d4ef319b678a1606e7d86e38d95da45614367\"",
+      "repo_path": "transfer_engine/resources/transfer_pairing_exclusions.csv"
+    },
+    "transfer_rule/transfer_row_exclusion_patterns.csv": {
+      "content_sha256": "fec290c16a9a529c4c9c831c4b5521788bfc8df0803b1a0e41f8acc2f1747699",
+      "etag": "\"7b149c704f9bc0f017dedd919c20655d27eecffcfb3b1f8f7ef116d1da36b35a\"",
+      "repo_path": "transfer_engine/resources/transfer_row_exclusion_patterns.csv"
+    }
+  },
+  "upstream": {
+    "branch": "main",
+    "commit": "fae785713a75a5da21c219b9f0f60c7d5fc6fdbc",
+    "synced_at": "2026-09-15T04:02:30+00:00",
+    "url": "https://github.com/EliamZhang/ServiFlow-AI"
+  }
+}

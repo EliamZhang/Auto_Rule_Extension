@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,36 @@ def load_config(project_root: Path | None = None) -> dict[str, Any]:
         return json.load(f)
 
 
+# ── Text normalization ───────────────────────────────────────────────────────
+
+def normalize_pattern_text(text: str, config: dict[str, Any]) -> str:
+    """Normalize a transaction description for frequency clustering.
+
+    Strips dates, amounts and long reference numbers, uppercases, and collapses
+    whitespace. Driven by ``config["analysis"]["normalization"]``; each toggle
+    defaults to True. Used by analyze_gaps and modules/liability_enrich.
+    """
+    norm_cfg = config.get("analysis", {}).get("normalization", {})
+    text = str(text)
+
+    if norm_cfg.get("remove_dates", True):
+        text = re.sub(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b", " ", text)
+        text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", text)
+
+    if norm_cfg.get("remove_amounts", True):
+        text = re.sub(r"\$\s*\d+(?:[.,]\d{2})?", " ", text)
+        text = re.sub(r"\b\d+\.\d{2}\b", " ", text)
+
+    if norm_cfg.get("remove_numbers", True):
+        text = re.sub(r"\b\d{4,}\b", " ", text)
+        text = re.sub(r"\bV\d{4}\b", " ", text)
+
+    if norm_cfg.get("uppercase", True):
+        text = text.upper()
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
 # ── Engine metadata ──────────────────────────────────────────────────────────
 
 # Columns that are metadata (not part of rule definition).
@@ -64,6 +95,9 @@ META_COLUMNS: set[str] = {
     "illion_category",
     "samples",
     "target_file",
+    # Source URL recorded by modules/liability_enrich when a candidate came from
+    # web verification. Must be stripped before writing, or it pollutes raw/.
+    "evidence_source",
 }
 
 
@@ -85,6 +119,7 @@ def get_engine_priority(engine_id: str, config: dict[str, Any] | None = None) ->
         "transfer": 1,
         "initial": 10,
         "dishonour": 150,
+        "gambling": 180,
         "income": 200,
         "liability": 300,
         "all_other_credit": 400,
@@ -138,6 +173,36 @@ def resolve_rules_base(project_root: Path, config: dict[str, Any]) -> Path:
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
+
+def read_transactions(input_path: Path) -> "pd.DataFrame":
+    """Read the transactions sheet from a pipeline report (.xlsx or .csv).
+
+    Prefers a sheet literally named ``transactions``; falls back to the first
+    sheet so a hand-trimmed export still loads. Raises ValueError on any other
+    suffix rather than guessing.
+
+    pandas is imported lazily: sync_rules.py imports common but must stay
+    pandas-free so it can run in a bare environment.
+    """
+    import pandas as pd
+
+    input_path = Path(input_path)
+    suffix = input_path.suffix.lower()
+
+    if suffix in (".xlsx", ".xlsm", ".xls"):
+        xlsx = pd.ExcelFile(input_path)
+        sheet = "transactions" if "transactions" in xlsx.sheet_names else 0
+        df = pd.read_excel(xlsx, sheet_name=sheet)
+        log.info("Loaded %s: %s rows, sheets: %s", suffix, f"{len(df):,}", xlsx.sheet_names)
+        return df
+
+    if suffix == ".csv":
+        df = pd.read_csv(input_path, encoding="utf-8-sig")
+        log.info("Loaded .csv: %s rows", f"{len(df):,}")
+        return df
+
+    raise ValueError(f"Unsupported input format: {suffix}. Expected .xlsx or .csv")
+
 
 def load_category_catalog(project_root: Path | None = None) -> dict[str, Any]:
     """Load the category catalog that maps finv categories to owner engines.
