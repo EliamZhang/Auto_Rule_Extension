@@ -36,7 +36,7 @@ Output: ``<output>/liability_gaps.json``
 Usage:
     python modules/liability_enrich/gap_source.py \\
         --input input/202609091024.xlsx \\
-        --output reviews/2026-09-14/
+        --output reviews/2026-09-09_1025/
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # Auto Rule Extension
 
-基于 Claude Code 的智能规则维护系统，为 [finv_category_V2](https://github.com/EliamZhang/finv_category_V2) 交易分类流水线的 10 个引擎自动发现并补充分类规则。
+基于 Claude Code 的智能规则维护系统，为 [finv_category_V2](https://github.com/EliamZhang/ServiFlow-AI)（上游仓库 `ServiFlow-AI`，本地检出目录名是 `../finv_category_V2`）交易分类流水线的 10 个引擎自动发现并补充分类规则。
 
 ## 解决的问题
 
@@ -65,16 +65,18 @@
 
 ```
 Auto_Rule_Extension/
-├── scripts/
+├── scripts/                   ← 共 13 个 .py（11 在用 + 2 历史遗留，详见 CLAUDE.md）
 │   ├── common.py              ← 共享工具模块
 │   ├── sync_upstream.py       ← 同步层 1：GitHub → raw/（HTTPS 直取，不经过 finv）
 │   ├── sync_rules.py          ← 同步层 2：finv 工作副本 ↔ raw/（只拉不推）
 │   ├── analyze_gaps.py        ← 统计层：发现高频未覆盖模式
 │   ├── label_compare.py       ← 质检层：illion vs finv 分类差异报告
+│   ├── search_merchant.py     ← 工具：搜规则 CSV 的商户/keyword
 │   ├── validate_candidates.py ← 验证层：语法+Schema+值校验
 │   ├── baseline.py            ← 基线层：save 保存快照 / diff 影响面
 │   ├── test_rules.py          ← 测试层：确认规则实际表现
-│   └── apply_rules.py         ← 执行层：写入规则到 raw/
+│   ├── apply_rules.py         ← 执行层：写入规则到 raw/
+│   └── apply_keyword_updates.py ← 执行层（initial 专用）：追加 keyword 变体到已有商户
 ├── raw/                       ← 各引擎规则的本地副本
 ├── modules/                   ← 合并进来的运维模块
 │   ├── merchant_kb/           ← ABR XML → merchant_kb.csv 构建流水线
@@ -159,9 +161,12 @@ python scripts/apply_rules.py \
     --sync_to ../finv_category_V2/
 ```
 
-> **注意**：`raw/initial_rule/merchant_kb.csv`（74 MB）首次使用时会由
-> `sync_upstream.py` 从上游下载。它体积大但**已纳入 Git**（`.git` 因此膨胀到 145 MB），
+> **注意**：`raw/initial_rule/merchant_kb.csv`（**74 MB / 70.9 MiB**）首次使用时会由
+> `sync_upstream.py` 从上游下载。它体积大但**已纳入 Git**（`.git` 目前 **94 MB**），
 > 且同时是 `modules/merchant_kb` 的产物 —— 「把 KB 移出 git 并清理历史」是已识别但尚未执行的决定。
+>
+> 2026-09-15 已把 **53.8 MB** 的 `merchant_kb.csv.keyword_bak`（2026-08-11 旧快照）取消 git 追踪，
+> 文件仍在磁盘上；`.gitignore` 补了 `raw/initial_rule/*_bak` 规则（原有 `*.bak` 拦不住 `_bak` 后缀）。
 
 ## 设计原则
 

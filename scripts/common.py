@@ -101,6 +101,257 @@ META_COLUMNS: set[str] = {
 }
 
 
+# The column holding a candidate's match text is engine-dependent: initial
+# (merchant_kb) uses `keywords`, transfer / liability use `keyword`, everything
+# else uses `pattern`. Reading only one of them silently yields "" — which does
+# not fail loudly, it turns its caller into a no-op (see candidate_pattern).
+_PATTERN_COLUMNS: tuple[str, ...] = ("pattern", "keywords", "keyword")
+
+
+def candidate_pattern(row: Any) -> str:
+    """Extract a candidate's match text whatever column the engine puts it in.
+
+    Accepts a pandas Series (candidate CSV rows) or a plain dict
+    (confirmed_rules.json entries) — both answer ``.get()``.
+
+    Why this exists: reading ``row.get("pattern", row.get("keyword", ""))``
+    returns "" for every initial-engine candidate, because merchant_kb's column
+    is named ``keywords``. Callers that then do ``if not pattern: continue``
+    drop those rows in silence instead of reporting them.
+    """
+    for col in _PATTERN_COLUMNS:
+        value = row.get(col)
+        if value is None:
+            continue
+        # str() rather than a truthiness test: pandas NaN / pd.NA are not
+        # None and evaluating them in a boolean context either lies (NaN is
+        # truthy) or raises (pd.NA is ambiguous).
+        text = str(value).strip()
+        if text and text.lower() not in ("nan", "<na>", "none"):
+            return text
+    return ""
+
+
+# ── Per-engine text normalization & match semantics ──────────────────────────
+#
+# `baseline.py` answers "what would this candidate actually match?", so it has to
+# reproduce each engine's preprocessing and matching — not just compare strings.
+# The candidate CSVs cannot tell it how: initial's column is `keywords` and it
+# has no match_type column at all, and transfer's patterns are regexes but its
+# candidates carry no match_type either. Reading everything as a literal keyword
+# substring therefore reported gain=0 for both — 329 initial hits and 1056
+# transfer hits both came out as 0, so the human approval gate was being shown
+# roughly 10% of the true impact.
+#
+# The normalizers below mirror finv_category_V2/classification_core/text.py,
+# because that is the code sitting on the other side of that gate.
+
+_CLEAN_RE = re.compile(r"[^A-Z0-9]+")
+
+
+def _is_missing(value: Any) -> bool:
+    """True for None / NaN / pd.NA, without importing pandas (see read_transactions)."""
+    if value is None:
+        return True
+    try:
+        return bool(value != value)   # NaN compares unequal to itself
+    except (TypeError, ValueError):
+        return True                   # pd.NA: `!=` yields NA and bool() raises
+
+
+def clean_text(value: Any) -> str:
+    """Uppercase, turn every non-[A-Z0-9] run into a space, collapse spaces.
+
+    Mirrors finv's ``classification_core/text.py:clean_text``. Used by initial /
+    rent / gambling / catch_all, all of which match on this form.
+    """
+    if _is_missing(value):
+        return ""
+    return " ".join(_CLEAN_RE.sub(" ", str(value).upper()).split())
+
+
+# Which preprocessing each engine applies to transaction text before matching.
+# Only the engines that genuinely differ are listed; anything absent gets "raw".
+_ENGINE_TEXT: dict[str, str] = {
+    "initial": "clean",
+    "rent": "clean",
+    "gambling": "clean",
+    "catch_all": "clean",
+    "transfer": "lower",     # normalize_text(): collapse spaces + .lower()
+    "liability": "upper",    # normalize_match_text(): strip + upper + collapse
+    # income / fee / dishonour / all_other_credit keep "raw": matching raw text
+    # reproduces their generator hit_count exactly (129/129, 17/17, 15/15), so
+    # there is nothing to fix and every reason not to disturb it.
+}
+
+
+def normalize_engine_text(engine_id: str, value: Any) -> str:
+    """Transaction text as `engine_id` sees it. See _ENGINE_TEXT."""
+    kind = _ENGINE_TEXT.get(engine_id, "raw")
+    if kind == "clean":
+        return clean_text(value)
+    if kind == "lower":
+        return re.sub(r"\s+", " ", str(value).lower()).strip()
+    if kind == "upper":
+        return re.sub(r"\s+", " ", str(value).strip().upper())
+    return "" if _is_missing(value) else str(value)
+
+
+# How each engine decides a match, after normalization. An explicit
+# `match_type == "regex"` on the candidate always overrides this — catch_all and
+# both layers of rent/gambling declare it; the engines below often cannot.
+_MATCH_MODES: dict[str, str] = {
+    "initial": "whole_word_variants",
+    "rent": "whole_word_variants",
+    "gambling": "whole_word_variants",
+    "catch_all": "whole_word_variants",
+    "transfer": "regex_lower",
+    "liability": "alpha_edge",
+    "income": "regex",
+    "fee": "regex",
+    "dishonour": "substring",
+    "all_other_credit": "substring",
+}
+
+
+def match_mode(engine_id: str, match_type: str) -> str:
+    """Resolve how `engine_id` matches this candidate.
+
+    `match_type` defaults to "keyword" in every candidate reader, so an absent
+    column silently means "keyword" — which is why the per-engine table exists.
+    """
+    if str(match_type).strip().lower() == "regex":
+        return "regex"
+    return _MATCH_MODES.get(engine_id, "substring")
+
+
+def split_keyword_variants(pattern: Any, sep: str = "|") -> list[str]:
+    """Split a variant list on `sep`, dropping empty entries.
+
+    merchant_kb's ``keywords`` column and the institution rows of rent /
+    gambling use ``|``; liability's counterparty keywords use ``;``. The
+    separator is not cosmetic: treating the raw string as one literal keyword
+    matches nothing, because no transaction text contains a literal separator.
+    """
+    return [v.strip() for v in str(pattern).split(sep) if v.strip()]
+
+
+def whole_word_regex(keyword: str) -> str:
+    """Whole-word matcher regex for text already passed through clean_text().
+
+    On collapsed uppercase text the engine's boundary test (``text[pos-1] != " "``)
+    is exactly a space/edge boundary, so this reproduces it. Keywords containing
+    characters outside [A-Z0-9] can never match — that is real engine behaviour
+    (keyword loading stopped auto-cleaning in 2026-08), not a bug here.
+    """
+    return rf"(?:^| ){re.escape(keyword)}(?: |$)"
+
+
+def alpha_edge_regex(keyword: str) -> str:
+    """liability counterparty boundary: ``(?<![A-Za-z])kw(?![A-Za-z])``.
+
+    Deliberately not ``\\b`` — digits may pass through, so "1360 CASH LOANS"
+    matches the keyword "360 CASH LOANS". Applied to uppercased text.
+    """
+    return rf"(?<![A-Za-z]){re.escape(keyword)}(?![A-Za-z])"
+
+
+# ── Vectorized candidate matching ────────────────────────────────────────────
+#
+# One implementation, shared by baseline.py and test_rules.py. Both used to carry
+# their own copy of this matcher, and both copies had the same blind spot: they
+# compared the raw pattern against raw text as a case-insensitive literal. So
+# initial's `keywords` variants, transfer's lowercase regexes and liability's
+# alpha-edge boundaries all came out as gain=0 — two copies of one subtly-wrong
+# matcher is how that stayed invisible for so long.
+
+def _all_false(series: Any) -> Any:
+    """bool-dtype mask of False with the same index, without importing pandas.
+
+    ``series.map(lambda _: False)`` would also work, but ``isna()`` is guaranteed
+    to be bool-dtype, so the ``|=`` accumulation below can't hit an object-dtype
+    surprise. Written as a helper purely so the pandas-free constraint (see
+    read_transactions) is stated once.
+    """
+    return series.isna() & False
+
+
+def _safe_contains(series: Any, pattern: str, case: bool = True) -> Any:
+    """Regex match that degrades to "no match" instead of aborting the run.
+
+    An uncompilable pattern is reported as a warning and counted as zero gain,
+    which is the honest answer — it matches nothing — and keeps one bad candidate
+    from taking down the impact report for every other engine.
+    """
+    try:
+        return series.str.contains(pattern, case=case, regex=True, na=False)
+    except re.error as exc:
+        log.warning("  跳过非法 regex %r: %s", pattern[:60], exc)
+        return _all_false(series)
+
+
+def match_series(engine_id: str, pattern: str, match_type: str, series: Any) -> Any:
+    """Match one candidate against text already normalized for `engine_id`.
+
+    `series` must come from `engine_texts`, which applies that engine's own
+    preprocessing. Getting the pairing wrong is silent: a mismatch yields an
+    all-False mask, so the candidate is simply reported as gain=0 rather than
+    raising anything.
+    """
+    if not pattern or series.empty:
+        return _all_false(series)
+
+    mode = match_mode(engine_id, match_type)
+
+    if mode == "regex":
+        return _safe_contains(series, pattern, case=False)
+
+    if mode == "regex_lower":
+        # transfer lowercases its text, so its patterns only match in that form
+        # and must not be re-cased here.
+        return _safe_contains(series, pattern)
+
+    if mode == "whole_word_variants":
+        mask = _all_false(series)
+        for keyword in split_keyword_variants(pattern):
+            mask = mask | _safe_contains(series, whole_word_regex(keyword))
+        return mask
+
+    if mode == "alpha_edge":
+        # liability splits its keyword column on ";" (`counterparty.py` does
+        # `keyword.split(";")`), not on "|". Splitting on the wrong separator
+        # inverts the verdict for every multi-variant candidate: the correct
+        # semicolon form scores 0 while the pipe form — a dead rule in
+        # production — scores full marks.
+        mask = _all_false(series)
+        for keyword in split_keyword_variants(pattern, sep=";"):
+            mask = mask | _safe_contains(series, alpha_edge_regex(keyword), case=False)
+        return mask
+
+    # substring: dishonour / all_other_credit — a case-insensitive literal, and
+    # the fallback for an engine absent from _MATCH_MODES.
+    return series.str.contains(pattern, case=False, regex=False, na=False)
+
+
+def engine_texts(
+    engine_id: str,
+    unclassified: Any,
+    classified: Any,
+    cache: dict[str, tuple[Any, Any]],
+) -> tuple[Any, Any]:
+    """(unclassified, classified) text as `engine_id` sees it, memoized per engine.
+
+    Both series are large, so each engine's normalization is computed lazily and
+    only once — an engine that never appears in the run never pays for it.
+    """
+    if engine_id not in cache:
+        cache[engine_id] = (
+            unclassified.map(lambda v: normalize_engine_text(engine_id, v)),
+            classified.map(lambda v: normalize_engine_text(engine_id, v)),
+        )
+    return cache[engine_id]
+
+
 def get_engine_priority(engine_id: str, config: dict[str, Any] | None = None) -> int:
     """Get the execution priority for an engine.
 

@@ -36,7 +36,7 @@ would be stripped by apply_rules and land in ``raw/`` as rule data.
 
 Usage:
     python modules/liability_enrich/evidence.py \\
-        --candidates reviews/2026-09-14/liability_candidates.csv \\
+        --candidates reviews/2026-09-09_1025/liability_candidates.csv \\
         --input input/202609091024.xlsx
 """
 
@@ -247,8 +247,13 @@ def evaluate(
         "total_net_gain": sum(d.get("hit_unclassified", 0) for d in diagnostics),
         "total_would_steal": sum(d.get("hit_other", 0) for d in diagnostics),
         "notes": [
-            "hit_other 是会被本规则从其他引擎抢走的行数 —— liability 优先级 300，"
-            "晚于 transfer/initial/dishonour/income，早于 all_other_credit/fee/rent/catch_all。",
+            "hit_other 是当前属于其他引擎、但会被本规则整行覆盖掉的行数 —— liability 优先级 300，"
+            "晚于 transfer(1)/initial(10)/dishonour(150)/gambling(180)/income(200)，"
+            "早于 all_other_credit(400)/fee(500)/rent(800)/catch_all(999)。",
+            "⚠️ 该计数只按 finv_category 分桶，未复刻 orchestrator 的候选集排除："
+            "Wages/Centrelink 行不会被 liability 认领，gambling 已认领的行对 liability 是终局，"
+            "fee 等后置引擎还可能把行抢回去。所以 hit_other 会高估风险 ——"
+            "审批时结合 conflict_engines 明细判断，不要只看数字。",
             "status 一律不是 'confirmed'，apply_rules 不会自动写入；必须人工改写后才会生效。",
             "零增益的候选说明联网假设未获数据支持，建议直接丢弃。",
         ],

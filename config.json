@@ -34,10 +34,15 @@
         "transfer_counterparty_rules.csv",
         "transfer_external_high_confidence_rules.csv",
         "transfer_external_medium_confidence_rules.csv",
-        "transfer_internal_regex_rules.csv"
+        "transfer_internal_regex_rules.csv",
+        "transfer_group_exclusion_patterns.csv",
+        "transfer_indicator_patterns.csv",
+        "transfer_pairing_exclusions.csv",
+        "transfer_row_exclusion_patterns.csv"
       ],
       "match_types": ["keyword", "regex"],
-      "top_n_gaps": 100
+      "top_n_gaps": 100,
+      "note": "后 4 个 pattern/exclusion 文件于 2026-09-15 补入。此前不在 rule_files 里，导致 apply_rules.py:64 的 _detect_target_file 对它们的 target_file 抛 ValueError —— 异常在 :168 被捕获后仅记 error 并跳过该行，所以这类候选**永远落不了库**且不会中断整批。它们的 schema 与转账分类规则不同（pattern_id,pattern[,category],description / keyword,match_type,exclusion_reason,priority,description）。CLAUDE.md 说这些文件「通常不需要自动生成」，故实际影响有限，但漏登记会让将来真要写它们时静默失败。"
     },
     "dishonour": {
       "engine_dir": "dishonour_rule",
@@ -62,7 +67,8 @@
       "finv_rule_dir": "resources",
       "rule_files": ["income_pattern_rules.csv"],
       "match_types": ["regex"],
-      "top_n_gaps": 100
+      "top_n_gaps": 100,
+      "note": "income_config.csv **刻意不在 rule_files 里**——它是阈值配置（config_key,config_value,config_type,description），不是候选规则的目标。它仍被 sync_rules.py / sync_upstream.py 覆盖（两者按目录实际 *.csv ∪ config 发现文件，不只看 rule_files）。"
     },
     "liability": {
       "engine_dir": "liability_rule",
@@ -78,7 +84,8 @@
         "overdrawn_rules.csv"
       ],
       "match_types": ["keyword", "regex"],
-      "top_n_gaps": 150
+      "top_n_gaps": 150,
+      "note": "bnpl_maximum_limits.csv **刻意不在 rule_files 里**——它是限额配置（rate_type,counterparty,value），不是候选规则的目标。同 income_config.csv，它仍被两个 sync 脚本覆盖。"
     },
     "all_other_credit": {
       "engine_dir": "all_other_credit_rule",
@@ -180,10 +187,11 @@
   "large_files": {
     "merchant_kb.csv": {
       "skip_pattern_loading": true,
-      "note": "~876K merchants with ~1.34M keyword variants. Skip for overlap checking to avoid OOM."
+      "note": "874,600 merchants with 1,338,895 keyword variants (2026-09-15 实测). Skip for overlap checking to avoid OOM."
     }
   },
   "validation": {
+    "_note": "⚠️ 本段当前**没有任何脚本读取**（2026-09-15 全仓 grep 零命中）。改这两个值不会有任何效果——不要以为设了 max_regression_changes=0 就会被强制零回归检查。保留仅为将来实现的占位。",
     "sample_hit_count": 5,
     "max_regression_changes": 0
   }

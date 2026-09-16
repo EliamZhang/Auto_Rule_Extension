@@ -147,8 +147,8 @@ hard_negative,\bFIN\s+ONE\b,regex,FIN ONE PTY LTD payday lender
 pay_signal,\bPAY\b,regex,Standalone PAY word (transfer-from payroll signal)
 pay_signal,\bPAYRO\b,regex,Truncated PAYROLL (50-char bank description cut; PAYROLL intact is matched by strong_wage)
 behavior_exclusion,\bDEPOSIT\s*ONLINE\s+\d+\s+TFR\b,regex,Self-transfer: deposit online transfer
-behavior_exclusion,\bTFR\s*FROM\s+\d{6,}\b,regex,Self-transfer: TFR FROM with account number
-behavior_exclusion,\bFUNDS\s*TFER\b.*\bFROM\s+\d{6,}\b,regex,Self-transfer: funds transfer from account number
+behavior_exclusion,"\bTFR\s*FROM\s+\d{6,}\b",regex,Self-transfer: TFR FROM with account number
+behavior_exclusion,"\bFUNDS\s*TFER\b.*\bFROM\s+\d{6,}\b",regex,Self-transfer: funds transfer from account number
 behavior_exclusion,\bPAY\s*BACK\b,regex,Repayment of money
 behavior_exclusion,\bSAVINGS\b,regex,Savings transfer
 behavior_exclusion,\bCONVERA\b,regex,Convera international remittance
@@ -205,8 +205,8 @@ gig_personal_exclusion,\bSCHOOL\s*FEES?\b,regex,School fees
 gig_personal_exclusion,\bDIRECT\s+DR\b,regex,Direct debit/return
 gig_personal_exclusion,\bTFC\b,regex,Transfer suffix: TFC
 gig_personal_exclusion,\bTFD\b,regex,Transfer suffix: TFD
-gig_personal_exclusion,\bFROM\s+\d{3,4}-\d{3}-\d{3,}\b,regex,Self-transfer: transfer from account number
-gig_personal_exclusion,\bFROM\s+\d{7,}\b,regex,Self-transfer: transfer from long account number
+gig_personal_exclusion,"\bFROM\s+\d{3,4}-\d{3}-\d{3,}\b",regex,Self-transfer: transfer from account number
+gig_personal_exclusion,"\bFROM\s+\d{7,}\b",regex,Self-transfer: transfer from long account number
 gig_personal_exclusion,\bSENT\s+FROM\s+REVOLUT\b,regex,International remittance: REVOLUT
 gig_personal_exclusion,\bCARD\s+USE\b,regex,Card use
 gig_personal_exclusion,\bEXPENSES\b,regex,Expense reimbursement

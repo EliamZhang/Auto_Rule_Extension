@@ -27,8 +27,12 @@ from typing import Any
 import pandas as pd
 
 from common import (
+    candidate_pattern,
+    engine_texts,
     load_config,
     get_engine_priority,
+    match_mode,
+    match_series,
     log,
     setup_logging,
 )
@@ -62,29 +66,16 @@ def _read_input(input_path: Path) -> pd.DataFrame:
 
 # ── 匹配引擎 ──────────────────────────────────────────────────────────────────
 
-def _match_series(
-    pattern: str,
-    match_type: str,
-    series: pd.Series,
-) -> pd.Series:
-    """向量化模式匹配（参考 baseline.py 实现）。
+def _validate_pattern(pattern: str, match_type: str, engine: str) -> tuple[bool, str]:
+    """验证模式是否合法。返回 (是否合法, 错误信息)。
 
-    使用 pandas str.contains，比逐行 Python 循环快几个数量级。
+    regex 判定按引擎走 `match_mode`：transfer 的候选 CSV **没有 match_type 列**，
+    它的 pattern 全是正则，若只看 `match_type == "regex"` 就会漏掉它们，坏正则
+    要等到匹配阶段才以「0 增益」的形式浮出来，看不出是模式本身写错了。
     """
-    if not pattern or series.empty:
-        return pd.Series([False] * len(series), index=series.index)
-
-    if match_type == "regex":
-        return series.str.contains(pattern, case=False, regex=True, na=False)
-    else:
-        return series.str.contains(pattern, case=False, regex=False, na=False)
-
-
-def _validate_pattern(pattern: str, match_type: str) -> tuple[bool, str]:
-    """验证模式是否合法。返回 (是否合法, 错误信息)。"""
     if not pattern or not pattern.strip():
         return False, "模式为空"
-    if match_type == "regex":
+    if match_mode(engine, match_type) in ("regex", "regex_lower"):
         try:
             re.compile(pattern, re.IGNORECASE)
         except re.error as e:
@@ -164,9 +155,11 @@ def test_rules(
     log.info("总交易: %s | 已分类: %s | 未分类: %s",
              f"{total:,}", f"{classified_mask.sum():,}", f"{uncl_mask.sum():,}")
 
-    # 准备向量化匹配所需 Series（索引与对应 DataFrame 一致）
-    uncl_texts = pd.Series(uncl_df["text"].astype(str).values, dtype="string")
-    cl_texts = pd.Series(cl_df["text"].astype(str).values, dtype="string")
+    # 准备向量化匹配所需 Series（索引与对应 DataFrame 一致）。保持**原始**形态，
+    # 各引擎的归一化视图由 engine_texts 按需派生（见下）。
+    uncl_raw = pd.Series(uncl_df["text"].astype(str).values, dtype="string")
+    cl_raw = pd.Series(cl_df["text"].astype(str).values, dtype="string")
+    text_cache: dict[str, tuple[pd.Series, pd.Series]] = {}
 
     # ── 3. 逐规则测试 ──
     HIGH_CONFLICT_COUNT = 5       # 冲突超过此数 → 高风险
@@ -179,7 +172,9 @@ def test_rules(
     high_conflict_rules: list[str] = []
 
     for idx, rule in enumerate(rules):
-        pattern = str(rule.get("pattern", ""))
+        # 列名按引擎而异（initial → keywords；transfer / liability → keyword；
+        # 其余 → pattern），只读 "pattern" 会让 initial 的每条规则都静默变空。
+        pattern = candidate_pattern(rule)
         match_type = str(rule.get("match_type", "keyword")).lower()
         rule_name = str(rule.get("rule_name", f"rule_{idx}"))
         engine = str(rule.get("engine", "unknown"))
@@ -187,7 +182,7 @@ def test_rules(
         confidence = rule.get("confidence", None)
 
         # 验证模式
-        is_valid, err_msg = _validate_pattern(pattern, match_type)
+        is_valid, err_msg = _validate_pattern(pattern, match_type, engine)
         if not is_valid:
             log.warning("  ⚠ 跳过 %s: %s", rule_name, err_msg)
             per_rule_results.append({
@@ -205,9 +200,12 @@ def test_rules(
             continue
 
         eng_priority = get_engine_priority(engine, config)
+        # 该引擎眼里的文本：归一化 + 匹配方式都必须按引擎走，否则 initial /
+        # transfer / liability 的规则会一律算成 0 增益（与 baseline.py 同源逻辑）
+        eng_uncl, eng_cl = engine_texts(engine, uncl_raw, cl_raw, text_cache)
 
         # ── 3a. 增益测试（未分类交易） ──
-        uncl_match_mask = _match_series(pattern, match_type, uncl_texts)
+        uncl_match_mask = match_series(engine, pattern, match_type, eng_uncl)
         gain_count = int(uncl_match_mask.sum())
 
         # 提取样本
@@ -219,7 +217,7 @@ def test_rules(
                 gain_samples.append(text[:200])
 
         # ── 3b. 冲突测试（已分类交易） ──
-        cl_match_mask = _match_series(pattern, match_type, cl_texts)
+        cl_match_mask = match_series(engine, pattern, match_type, eng_cl)
         conflict_count = int(cl_match_mask.sum())
 
         conflict_details: list[dict[str, Any]] = []

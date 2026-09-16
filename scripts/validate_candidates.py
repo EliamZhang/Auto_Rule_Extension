@@ -25,6 +25,7 @@ from typing import Any
 import pandas as pd
 
 from common import (
+    candidate_pattern,
     load_config,
     resolve_rule_path,
     resolve_rules_base,
@@ -75,7 +76,7 @@ def _check_overlaps(
     """Check if a new pattern overlaps with existing rules."""
     overlaps = []
     for _, rule in existing_rules.iterrows():
-        existing_pattern = str(rule.get("pattern", rule.get("keyword", "")))
+        existing_pattern = candidate_pattern(rule)
         if not existing_pattern:
             continue
         p_upper = pattern.upper()
@@ -218,8 +219,10 @@ def _check_institution_style(
 
     institution 层 (`source=institution`)：Aho-Corasick 全词匹配，**最长 keyword 胜出**。
         pattern 列是 `|` 分隔的 keyword 变体表，**match_type 被忽略**（引擎一律按
-        literal keyword 处理）；confidence 列同样**不被读取**，引擎用代码常量
-        `INSTITUTION_CONFIDENCE = 0.95`。counterparty 取该行的 counterparty 列，
+        literal keyword 处理）；confidence 列同样**完全不被读取** —— 该层的胜负是结构性的
+        （`inst_win` 直接覆盖 `kw_win`），CSV 里惯例写的 0.95 只是书写风格，
+        `INSTITUTION_CONFIDENCE` 是 `merchant_institution.py:41` 的死常量（全仓无引用）。
+        counterparty 取该行的 counterparty 列，
         为空则回落到 rule_name。
     rule 层 (`source=rule` 或该列缺省)：clean_text() → keyword(全词) / regex，
         最高 confidence 胜出。
@@ -293,7 +296,7 @@ def _check_institution_style(
                     "ERROR",
                     f"{label} keyword 含特殊字符，clean_text() 只保留 [A-Z0-9 ]。"
                 ))
-        elif match_type == "regex" and re.search(r"[a-z]", pattern):
+        elif match_type == "regex" and re.search(r"(?<!\\)[a-z]", pattern):
             issues.append((
                 "WARNING",
                 f"{label} regex: 引擎在 clean_text() 结果上匹配（全大写），小写字母可能匹配不到。"
@@ -458,7 +461,7 @@ def _check_income(pattern: str, match_type: str, row: pd.Series) -> list[tuple[s
             re.compile(pattern, re.IGNORECASE)
         except re.error as e:
             issues.append(("ERROR", f"income regex 编译失败: {e}"))
-        if re.search(r"[a-z]", pattern):
+        if re.search(r"(?<!\\)[a-z]", pattern):
             issues.append((
                 "WARNING",
                 "income: 引擎在 clean_text_with_seams() 结果上匹配（全大写），小写字母可能匹配不到。"
@@ -488,6 +491,16 @@ def _check_liability(pattern: str, match_type: str, row: pd.Series) -> list[tupl
                 "ERROR",
                 "liability counterparty_keyword_rules.csv 没有 rule_type 列，"
                 "regex 行会被当 keyword 处理成死规则。要加 regex 必须先给 CSV 加列。"
+            ))
+        # `|` 不是本 CSV 的分隔符 —— 引擎按 `;` 切（counterparty.py 的
+        # split_upper_terms），混用会让整格变成一个含字面 `|` 的 keyword，永不命中。
+        # merchant_kb 的 keywords 列、rent/gambling 的 institution 行才用 `|`，
+        # 跨引擎抄格式时最容易踩（reviews/ 里就有一条历史候选栽在这上面）。
+        if "|" in str(pattern):
+            issues.append((
+                "ERROR",
+                "liability counterparty keyword 含 '|'：本引擎只按 ';' 拆分，"
+                "整格会被当成一个含字面 '|' 的 keyword，永不命中。改用 ';' 分隔。"
             ))
         for variant in str(pattern).split(";"):
             variant = variant.strip()
@@ -533,11 +546,23 @@ def _check_initial(pattern: str, match_type: str, row: pd.Series) -> list[tuple[
                 "且 keyword 加载时不再自动 clean_text（2026-08 起），必须预清洗成大写规范形式。"
             ))
     if "category" in row.index:
-        if str(row.get("category", "")).strip() == "Financial Institutions":
+        cat = str(row.get("category", "")).strip()
+        if cat == "Financial Institutions":
             issues.append((
                 "ERROR",
                 "initial: category='Financial Institutions' 的行在加载时被直接丢弃，"
                 "此规则永远不会生效。请改用 liability 引擎。"
+            ))
+        elif cat == "Gambling":
+            # merchant_kb 自 2026-09-02 起清空了全部 Gambling 行，识别改由
+            # priority 180 的 gambling_engine 承担。写进 initial 只会造出一批
+            # 永不生效的规则 —— merchant_kb 里 Gambling 行数为 0，不是"覆盖"，
+            # 是新增了一条引擎根本不会看的数据。
+            issues.append((
+                "ERROR",
+                "initial: category='Gambling' —— 赌博商户自 2026-09-02 起已从 merchant_kb 移出，"
+                "由 priority 180 的 gambling_engine 接管。请写 gambling_candidates.csv"
+                "（institution 层，pattern 用 | 分隔，counterparty 填商户名）。"
             ))
     return issues
 
@@ -637,30 +662,64 @@ def validate_candidates(
         }
 
         existing_rules_cache: dict[str, pd.DataFrame] = {}
-        schema_errors_by_file: dict[str, str] = {}
 
         for rf in rule_files:
             rule_path = resolve_rule_path(rules_base, engine_id, eng_cfg, rf)
             if rule_path.exists():
                 try:
                     existing_rules_cache[rf] = pd.read_csv(rule_path, encoding="utf-8-sig")
-                    ok, err = _validate_csv_schema(candidates, existing_rules_cache[rf])
-                    if not ok:
-                        schema_errors_by_file[rf] = err
                 except Exception as e:
                     log.warning("  Could not load %s: %s", rf, e)
             else:
                 log.warning("  Rule file not found: %s", rule_path)
 
-        if len(schema_errors_by_file) == len(rule_files) and rule_files:
-            all_errs = "; ".join(f"{rf}: {err}" for rf, err in schema_errors_by_file.items())
-            engine_report["schema_errors"].append(all_errs)
-            log.warning("  Schema mismatch against all rule files")
+        # Schema check against the file the row will actually be written to.
+        # Comparing the candidate CSV against *every* rule file can only pass by
+        # matching all of them at once — and liability's 8 files carry 4 different
+        # schemas, transfer's 8 are equally heterogeneous, so that guard was
+        # effectively unreachable.
+        #
+        # A column diff is logged, not reported as a schema_error: apply_rules.py
+        # already normalizes both directions (missing columns are filled with ""
+        # at :211-213, extra ones are dropped by `new_rules[orig_cols]` at :215),
+        # so a mismatch cannot be written wrong. Counting it as an error is what
+        # made transfer emit `schema_errors: 1` every run for a `dr_cr` column
+        # that 53 of its 57 existing rules leave empty anyway. What *is*
+        # actionable is a target_file the engine doesn't own — that one still
+        # fails loudly.
+        target_files = [
+            t for t in (
+                candidates["target_file"].fillna("").astype(str).str.strip().unique().tolist()
+                if "target_file" in candidates.columns else []
+            )
+            if t
+        ]
+
+        if target_files:
+            for tf in target_files:
+                if tf not in existing_rules_cache:
+                    engine_report["schema_errors"].append(
+                        f"target_file='{tf}' 不在引擎 {engine_id} 的 rule_files 里"
+                        f"（已知: {', '.join(rule_files) or '无'}）"
+                    )
+                    continue
+                ok, err = _validate_csv_schema(candidates, existing_rules_cache[tf])
+                if not ok:
+                    log.warning("  列差异（apply_rules 会自行对齐）vs %s: %s", tf, err)
+        elif existing_rules_cache:
+            schema_errors_by_file: dict[str, str] = {}
+            for rf, existing in existing_rules_cache.items():
+                ok, err = _validate_csv_schema(candidates, existing)
+                if not ok:
+                    schema_errors_by_file[rf] = err
+            if len(schema_errors_by_file) == len(existing_rules_cache):
+                all_errs = "; ".join(f"{rf}: {err}" for rf, err in schema_errors_by_file.items())
+                log.warning("  列差异（apply_rules 会自行对齐）vs 全部规则文件: %s", all_errs)
 
         large_files_cfg = config.get("large_files", {})
 
         for idx, row in candidates.iterrows():
-            pattern = str(row.get("pattern", row.get("keyword", "")))
+            pattern = candidate_pattern(row)
             match_type = str(row.get("match_type", "keyword")).lower()
             rule_name = str(row.get("rule_name", row.get("rule_id", f"candidate_{idx}")))
 

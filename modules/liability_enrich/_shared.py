@@ -118,6 +118,11 @@ def validate_keyword(keyword: str) -> str | None:
     """
     if not keyword:
         return "keyword 为空"
+    if "|" in keyword:
+        return (f"含 '|'（{keyword!r}）—— liability 引擎只按 ';' 拆分"
+                f"（counterparty.py 的 split_upper_terms），整格会被当成"
+                f"一个含字面 '|' 的 keyword，永不命中。改用 ';' 分隔；"
+                f"'|' 是 merchant_kb / rent / gambling institution 的分隔符，别混用")
     if keyword[0].isdigit():
         return (f"以数字开头（{keyword!r}）—— 边界是 (?<![A-Za-z]) 而非 \\b，"
                 f"会误伤 '1{keyword}' 这类文本")

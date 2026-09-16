@@ -760,8 +760,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # KB 自 2026-08-27 起重建为 3 列，keyword_updated_at 已废弃。缺该列时
-    # 行过滤会让 "" >= changed_since 恒为 False，静默跳过全部行——宁可报错。
+    # KB 自 2026-08-07（commit 29ae8b5）起即为 3 列，keyword_updated_at 已废弃。
+    # 缺该列时行过滤会让 "" >= changed_since 恒为 False，静默跳过全部行——宁可报错。
     if args.changed_since and not has_column(args.input, "keyword_updated_at"):
         parser.error(
             f"--changed-since 需要输入文件含 keyword_updated_at 列，但 {args.input} 没有。"

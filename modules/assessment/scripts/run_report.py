@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -68,6 +69,16 @@ def build_command(script: str, input_path: Path, out_dir: Path, names: tuple[str
 
 
 def main() -> int:
+    # 中文 Windows 的控制台默认 cp936(GBK)。生成器失败时，子进程的 traceback 会回显
+    # 源码里的中文，按 utf-8 解码得到 U+FFFD，再 print 到 GBK stdout 就抛
+    # UnicodeEncodeError —— 循环在那一行直接崩掉，后面的生成器一个都不跑，
+    # 「成功 N/M」汇总也不打印。errors="replace" 兜住父进程这一侧。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):   # 已被重定向成非 TextIOWrapper
+            pass
+
     parser = argparse.ArgumentParser(
         description="一次产出全套 BS-CAT 分类性能报告",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -119,7 +130,12 @@ def main() -> int:
         print(f"[{name}] 开始 …", flush=True)
         started = time.time()
         completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace")
+                                   errors="replace",
+                                   # 子进程默认按控制台编码（cp936）往管道写，上面却按
+                                   # utf-8 解 —— 中文子进程输出必然对不上。强制子进程走
+                                   # UTF-8，编解码才是一套。日志里那些「开始/失败/完成」
+                                   # 全靠这一条才不乱码。
+                                   env={**os.environ, "PYTHONUTF8": "1"})
         elapsed = time.time() - started
         ok = completed.returncode == 0
         results.append((name, ok, elapsed, "" if ok else (completed.stderr or "").strip()))

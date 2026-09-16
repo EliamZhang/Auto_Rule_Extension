@@ -5,7 +5,16 @@ Business bd Pipeline — 全局配置
 每次换新报文只需修改此文件（如果规则变了），其余 pipeline 代码无需改动。
 """
 
+import csv
 from pathlib import Path
+
+# ─── csv 解析上限 ─────────────────────────────────────
+# 必须在任何 CSV 读取之前生效，所以放在 settings 里：本模块 8 个脚本全都
+# import 它，而只有 3 个 import utils。KB 里有单行 keywords 字段超过 csv
+# 默认的 128KB 上限（"Australia Post" 的 5,486 个变体 → 137KB），不放宽的
+# 话读取整个 KB 会在那一行抛 _csv.Error: field larger than field limit。
+# （utils.py 里也有一份，供单独 import utils 的调用方兜底）
+csv.field_size_limit(10_000_000)
 
 # ─── 目录 ─────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent          # modules/merchant_kb/
@@ -215,8 +224,11 @@ KB_INTERNAL_COLUMNS = [
 # 最终输出列（3 列）
 # ⚠️ 这是与 finv_category_V2 initial_engine 的加载契约，不可自由扩展：
 #    domain/classification.py:198 以 usecols=["merchant_name","keywords","category"] 读取。
-# 2026-08-27 起 KB 重建为 3 列；此前的 link / keyword_updated_at / category_updated_at
-# 列已废弃。需要这些元数据时用 KB_INTERNAL_COLUMNS 描述的中间产物。
+# 2026-08-07（commit 29ae8b5「压缩了kb大小」）起 KB 就是这 3 列；此前的
+# link / keyword_updated_at / category_updated_at 列已废弃。
+# ⚠️ 2026-08-27 的 commit c45ac5a 只是给赌博商户补 keyword 变体，不是 3 列化的起点。
+# 需要这些元数据时用 KB_INTERNAL_COLUMNS 描述的中间产物 —— 但注意该产物**已不再生成**
+# （见 KB_INTERNAL_COLUMNS 处的说明）。
 FINAL_OUTPUT_COLUMNS = [
     "merchant_name",
     "keywords",

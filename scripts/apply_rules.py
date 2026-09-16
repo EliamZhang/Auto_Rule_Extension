@@ -30,6 +30,7 @@ from typing import Any
 import pandas as pd
 
 from common import (
+    candidate_pattern,
     load_config,
     resolve_finv_path,
     resolve_rule_path,
@@ -312,7 +313,7 @@ def _dry_run(review_dir: Path, config: dict[str, Any]) -> None:
             rule_path = resolve_rule_path(rules_base, engine_id, eng_cfg, tf)
             print(f"  → {tf}: {len(rows)} rule(s) [would write to {rule_path}]")
             for r in rows:
-                p = str(r.get("pattern", r.get("keyword", "")))
+                p = candidate_pattern(r)
                 print(f"      - {p[:80]}")
             total += len(rows)
 

@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,27 +32,14 @@ from typing import Any
 import pandas as pd
 
 from common import (
+    candidate_pattern,
+    engine_texts,
     load_config,
     get_engine_priority,
-    META_COLUMNS,
+    match_series,
     log,
     setup_logging,
 )
-
-
-# ── helpers ──────────────────────────────────────────────────────────────────
-
-def _match_text(pattern: str, match_type: str, text: str) -> bool:
-    """Check if a pattern matches transaction text (used for sample extraction)."""
-    if not pattern or not text:
-        return False
-    if match_type == "regex":
-        try:
-            return bool(re.search(pattern, str(text), re.IGNORECASE))
-        except re.error:
-            return False
-    else:
-        return pattern.upper() in str(text).upper()
 
 
 # ── save ─────────────────────────────────────────────────────────────────────
@@ -144,25 +130,6 @@ def baseline_save(input_path: Path, output_dir: Path) -> dict[str, Any]:
 
 # ── diff ─────────────────────────────────────────────────────────────────────
 
-def _match_series(
-    pattern: str,
-    match_type: str,
-    series: pd.Series,
-) -> pd.Series:
-    """Vectorized pattern matching against a pandas Series.
-
-    Uses pandas str.contains for both keyword and regex matching,
-    which is orders of magnitude faster than Python-level iteration.
-    """
-    if not pattern or series.empty:
-        return pd.Series([False] * len(series), index=series.index)
-
-    if match_type == "regex":
-        return series.str.contains(pattern, case=False, regex=True, na=False)
-    else:
-        return series.str.contains(pattern, case=False, regex=False, na=False)
-
-
 def baseline_diff(
     input_path: Path,
     baseline_dir: Path,
@@ -199,15 +166,17 @@ def baseline_diff(
              f"{len(unclassified_list):,}",
              f"{len(classified_list):,}")
 
-    # Convert to pandas Series/DataFrame for vectorized matching
-    uncl_texts = pd.Series(
+    # Convert to pandas Series/DataFrame for vectorized matching.
+    # These stay in raw form; _engine_texts derives each engine's own view.
+    uncl_raw = pd.Series(
         [item["text"] for item in unclassified_list],
         dtype="string",
     )
-    cl_texts = pd.Series(
+    cl_raw = pd.Series(
         [item["text"] for item in classified_list],
         dtype="string",
     )
+    text_cache: dict[str, tuple[pd.Series, pd.Series]] = {}
     cl_df = pd.DataFrame(classified_list)
     if "engine" not in cl_df.columns:
         cl_df["engine"] = "unknown"
@@ -237,27 +206,29 @@ def baseline_diff(
 
         log.info("Engine: %s (%d candidates, priority=%d)", engine_id, len(candidates), eng_priority)
 
+        eng_uncl, eng_cl = engine_texts(engine_id, uncl_raw, cl_raw, text_cache)
+
         engine_impact: dict[str, Any] = {
             "rules": [],
             "summary": {"total_gain": 0, "total_conflicts": 0},
         }
 
         for _, row in candidates.iterrows():
-            pattern = str(row.get("pattern", row.get("keyword", "")))
+            pattern = candidate_pattern(row)
             match_type = str(row.get("match_type", "keyword")).lower()
             rule_name = str(row.get("rule_name", row.get("rule_id", f"candidate_{_}")))
 
-            if not pattern or pattern == "nan":
+            if not pattern:
                 continue
 
             # ── Match against unclassified (gain) using vectorized ops ──
-            uncl_mask = _match_series(pattern, match_type, uncl_texts)
+            uncl_mask = match_series(engine_id, pattern, match_type, eng_uncl)
             gain_count = int(uncl_mask.sum())
             gain_indices = uncl_mask[uncl_mask].index[:5]
             gain_samples = [unclassified_list[i]["text"] for i in gain_indices]
 
             # ── Match against classified (potential conflicts) using vectorized ops ──
-            cl_mask = _match_series(pattern, match_type, cl_texts)
+            cl_mask = match_series(engine_id, pattern, match_type, eng_cl)
             matched_cl = cl_df[cl_mask]
 
             conflict_categories: dict[tuple[str, str, bool], int] = {}

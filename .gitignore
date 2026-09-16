@@ -27,6 +27,10 @@ baseline/*
 reports/*
 !reports/.gitkeep
 
+# assessment 模块迁移前的旧产物目录（模块现在写 reports/<时间戳>/）。
+# 2026-09-15 已取消追踪；保留忽略规则，免得残留文件变成 untracked 噪音
+modules/assessment/output/
+
 # Input data (user-managed)
 input/*
 !input/.gitkeep
@@ -34,6 +38,9 @@ input/*
 # Backup files
 *.bak
 raw/**/*.bak
+# merchant_kb 的 keyword 列清洗前快照，命名是 _bak 不是 .bak，上面两条拦不住。
+# 2026-09-15 已取消追踪（53.8 MB），规则保留以防再次误入
+raw/initial_rule/*_bak
 
 # sync_upstream.py 的上游缓存（blobless 裸仓库，只有 commit/tree，无文件正文）
 .upstream_cache/

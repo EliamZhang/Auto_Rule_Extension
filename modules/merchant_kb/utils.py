@@ -106,9 +106,10 @@ def china_timestamp_now() -> str:
     return datetime.now(CHINA_TIMEZONE).replace(microsecond=0).isoformat()
 
 
-# KB 里有单行 keywords 字段超过 csv 模块默认的 128KB 上限的记录
-# （如 "Australia Post" 的 5,486 个变体 → 137KB）。不放宽的话，读取整个 KB
-# 会在该行抛 _csv.Error: field larger than field limit。
+# 兜底：settings.py 已设过同一上限（所有脚本都 import 它），这里留给单独
+# import utils 的调用方。KB 里有单行 keywords 字段超过 csv 默认的 128KB 上限
+# （如 "Australia Post" 的 5,486 个变体 → 137KB），不放宽的话读整个 KB 会在
+# 该行抛 _csv.Error: field larger than field limit。
 csv.field_size_limit(10_000_000)
 
 

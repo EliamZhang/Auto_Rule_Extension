@@ -39,6 +39,20 @@ from common import (
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def _label(value: Any) -> str:
+    """illion label cell → stripped text, with missing cells as "".
+
+    `str(row.get("category", ""))` yields the literal "nan" for a missing cell.
+    That string then travels into gap_summary.json as a category name and into
+    the category→engine lookup as a key that can never match — the 2026-09-09
+    run produced 124 patterns reading `"illion_category": "nan"`, plus 131 with
+    `"third_parties": ["nan"]`.
+    """
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
 def _load_existing_patterns(
     rules_base: Path, engine_id: str, engine_config: dict[str, Any], config: dict[str, Any]
 ) -> set[str]:
@@ -203,8 +217,8 @@ def analyze_gaps(
         if len(norm_text) < min_len:
             continue
 
-        illion_cat = str(row.get("category", "")).strip() if has_illion else ""
-        illion_tp = str(row.get("third_party", "")).strip() if has_illion else ""
+        illion_cat = _label(row.get("category")) if has_illion else ""
+        illion_tp = _label(row.get("third_party")) if has_illion else ""
 
         key = (norm_text, illion_cat)
 
@@ -250,6 +264,13 @@ def analyze_gaps(
             target = "gambling"
         elif pattern_type == "rent" or illion_cat == "Rent":
             target = "rent"
+        elif illion_cat == "Gambling":
+            # Symmetric with the Rent clause above: `gambling_indicators` only
+            # covers 27 tokens, so a Gambling-labelled row whose text misses all
+            # of them falls through to "generic" (→catch_all) or "ambiguous"
+            # (→ catalog, where `owner_engine_id: "initial,gambling"` makes the
+            # primary *initial*). Both send a gambling merchant to the wrong engine.
+            target = "gambling"
         elif pattern_type == "generic":
             target = "catch_all"
         else:

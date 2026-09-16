@@ -9,14 +9,14 @@
 ## 四步流水线
 
 ```
-Step 1  gap_source.py        数据侧找缺口        → reviews/<date>/liability_gaps.json
-Step 2  liability-enrichment 联网侧核实（Skill）  → reviews/<date>/liability_candidates.csv
-Step 3  evidence.py          数据侧验证（闸门）   → 就地回填候选 CSV + liability_evidence.json
+Step 1  gap_source.py        数据侧找缺口        → reviews/<YYYY-MM-DD_HHMM>/liability_gaps.json
+Step 2  liability-enrichment 联网侧核实（Skill）  → reviews/<YYYY-MM-DD_HHMM>/liability_candidates.csv
+Step 3  evidence.py          数据侧验证（闸门）                → 就地回填候选 CSV + liability_evidence.json
 Step 4  原有链路：validate_candidates → baseline diff → 🔴 人工审批 → test_rules → 🔴 确认 → apply_rules
 ```
 
 Step 2 没有脚本 —— 判断「这个商户到底是不是放贷商」需要联网检索和常识，
-由 `.claude/skills/liability-enrichment.md` 承担。
+由 `.claude/skills/liability-enrichment/SKILL.md` 承担。
 
 ## 用法
 
@@ -24,18 +24,21 @@ Step 2 没有脚本 —— 判断「这个商户到底是不是放贷商」需�
 # Step 1：从分类报告找缺口
 python modules/liability_enrich/gap_source.py \
     --input input/202609091024.xlsx \
-    --output reviews/2026-09-14/
+    --output reviews/2026-09-09_1025/
 
 # Step 2：跑 /liability-enrichment skill 联网核实，写出 liability_candidates.csv
 
 # Step 3：用真实数据验证候选（就地回填 hit_count/risk_level/samples/status）
 python modules/liability_enrich/evidence.py \
-    --candidates reviews/2026-09-14/liability_candidates.csv \
+    --candidates reviews/2026-09-09_1025/liability_candidates.csv \
     --input input/202609091024.xlsx
 
 # Step 4：走原有链路
-python scripts/validate_candidates.py --review_dir reviews/2026-09-14/
+python scripts/validate_candidates.py --review_dir reviews/2026-09-09_1025/
 ```
+
+产物目录用 `reviews/<YYYY-MM-DD_HHMM>/`（与 `reviews/` 下的实际目录一致），
+时间戳对应本次输入报告 —— 上面的例子即 `input/202609091024.xlsx` → `reviews/2026-09-09_1025/`。
 
 ## Step 1：三类缺口
 
@@ -53,7 +56,7 @@ python scripts/validate_candidates.py --review_dir reviews/2026-09-14/
 用子串匹配会把 `Retail` 拉进来，实测让这一类从 90 行虚增到 427 行。
 
 `unclassified_loan_signal` 类里每条带 `signal_strength` 字段：
-`strong` = 命中了 LOAN/LENDER/LEND/BORROW/PAYDAY/PAWN/BNPL，
+`strong` = 命中了 LOAN/LENDER/LENDING/LEND/BORROW/PAYDAY/PAWN/BNPL，
 `weak` = 只命中 CASH/CREDIT/FINANCE。弱信号排最后但不丢弃（宁可漏判不要误判）。
 
 ## Step 3：证据闸门
@@ -78,9 +81,23 @@ python scripts/validate_candidates.py --review_dir reviews/2026-09-14/
 | `hit_other` | 其中**当前属于其他引擎**的 —— liability 优先级 300，这些行会被抢走 |
 | `risk_level` | 由被抢比例决定：`高`（≥50%）、`中`（有抢）、`低`（无抢）、`零增益`（零命中）、`死规则`（keyword 本身非法） |
 
-`hit_other` 是这个闸门存在的意义：liability 排在 transfer(1)/initial(10)/dishonour(150)/income(200)
-**之后**、all_other_credit(400)/fee(500)/rent(800)/catch_all(999) **之前**，
-所以它既抢不了前面的引擎，也会把后面引擎认领的行整行覆盖掉。
+`hit_other` 是这个闸门存在的意义：liability 排在 transfer(1)/initial(10)/dishonour(150)/
+gambling(180)/income(200) **之后**、all_other_credit(400)/fee(500)/rent(800)/catch_all(999) **之前**。
+orchestrator 里后执行的引擎**按行覆盖**前面的（`orchestrator.py:92-96`），
+所以这批 `hit_other` 的大头恰恰是 transfer/initial/dishonour/gambling 认领的行 ——
+liability 会把它们整行抢走，这正是风险所在；排在它后面的 fee 等引擎则可能把行再抢回去。
+
+⚠️ **已知的口径偏差：`hit_other` / `risk_level` 在这些情形下会高估风险。**
+`evidence.py` 只按 `finv_category` 是否属负债类分桶（`evidence.py:175`
+`m_other = mask & ~m_unclassified & ~m_liability`），**没有复刻 orchestrator 的候选集排除**，
+以下命中会被计进 `hit_other` 却根本抢不走（或会被抢回）：
+
+- finv_category 是 `Wages` / `Centrelink` 的行 —— liability 的 candidates 直接排除它们（`orchestrator.py:98-102`）
+- **gambling(180) 已认领**的行 —— liability 在其上的预测在提交前被丢弃，赌博认领是终局（`orchestrator.py:141-147`）
+- 之后会被 fee(500) 抢回去的行 —— fee 在 liability 之后**不带排除**重跑，非 `unclassified_only` 的费用规则会重新认领
+
+所以 `risk_level=高` 只说明「按 `finv_category` 看这批命中大多不在负债类」，
+不等于「这些行真的会被抢走」；审批时要结合 `liability_evidence.json` 的 `conflict_engines` 明细判断。
 
 ### status 的取值
 
@@ -88,7 +105,7 @@ python scripts/validate_candidates.py --review_dir reviews/2026-09-14/
 |----|------|
 | `☐ confirm` | 值得人工看一眼 |
 | `✗ 零增益` | 零命中，联网假设未获数据支持，建议直接丢弃 |
-| `✗ 死规则` | keyword 本身非法（空、以数字开头），永远不会按预期生效 |
+| `✗ 死规则` | keyword 本身非法（空、以数字开头、不含任何字母），永远不会按预期生效 |
 
 ⚠️ **`apply_rules.py` 只写入 `status == "confirmed"` 的行**（`apply_rules.py:137`），
 上面三个值都不是 `confirmed`，所以这一步不会意外落库 —— 必须人工改写状态。
@@ -104,6 +121,19 @@ target_file,keyword,counterparty,product_type,match_type,status,hit_count,risk_l
 - `target_file` 必须是 `counterparty_keyword_rules.csv`（liability 有 7 个规则文件，
   不写会被 `apply_rules._detect_target_file` 落到第一个文件上）
 - `keyword` 用**分号**分隔多变体（与引擎的 `split_upper_terms` 一致，不是 `|`）
+- ⚠️ **多变体候选在 `baseline.py` / `test_rules.py` 里会报 0 命中**：这两处把整格
+  pattern 直接交给 `str.contains(..., regex=False)`（`baseline.py:246-247`、`test_rules.py:182-183`），
+  **不切分号** —— `A; B` 被当成一个字面量，永远不可能命中。能正确切 `;` 的只有
+  `_shared.split_variants`（`evidence.py` 用）与 `validate_candidates.py:492`。
+  后果：多变体候选在 `impact_report.json` 里 gain/conflict 都是 0，看起来「无影响」，
+  可能被误当无收益丢弃、或掩盖真实冲突 —— 判读影响面时要手工拆开变体核对。
+- `product_type` 只能填 skill 约定的 7 个值（`personal_loan`/`car_loan`/`home_loan`/
+  `bnpl`/`wage_advance`/`generic_loan`/`bank`），**没有任何一层会校验它**：
+  `evidence.py` 原样记录（`evidence.py:158,219`），`validate_candidates.py` 的
+  `_validate_value_constraints`（`:93-114`）只查 `match_type`/`rule_type`/`confidence`。
+  拼写变体会一路进 `raw/`，而 finv 的 `streams.py:1878-1888`（`PRODUCT_RULES`）
+  只按固定值分发 stream —— 引擎照样给出 counterparty，但拿不到 stream_id，
+  `add_finv_category` 因此也给不出 `finv_category`：**看着生效、分类落空**。
 - `evidence_source` 记联网来源 URL 供审批复核。它已加入 `scripts/common.py` 的
   `META_COLUMNS`，写入前会被剥离，不会污染 `raw/`
 
