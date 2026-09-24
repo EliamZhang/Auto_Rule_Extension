@@ -1278,24 +1278,46 @@ def build_report(doc: Document, analysis: Analysis, chart_png: Optional[Path] = 
     cov_follower = "Illion" if cov_leader == "finv" else "finv"
     leader_cov = m.finv_coverage if cov_leader == "finv" else m.illion_coverage
     follower_cov = m.illion_coverage if cov_leader == "finv" else m.finv_coverage
-    cmp_txt = "略高于" if abs(to_float(m.finv_coverage) - to_float(m.illion_coverage)) < 0.05 else "高于"
+    cov_gap_pp = abs(to_float(m.finv_coverage) - to_float(m.illion_coverage)) * 100
+    # ⚠️ 「略高于 / 基本持平」与「覆盖更广 / 基本相当」必须共用同一判定：此前摘要用的是 0.05
+    # 的**分数**阈值（≈5 个百分点），而 §2.1 的 coverage_degree 用 1.0 个百分点 —— 两者口径
+    # 不一致会让同一份报告既说「略高于」又说「更广」。统一取 1.0 个百分点。
+    cov_parity = cov_gap_pp < 1.0
+    cmp_txt = "基本持平于" if cov_parity else "略高于"
+    edge_txt = ("两者在覆盖范围上基本相当" if cov_parity
+                else f"{cov_leader} 在覆盖范围上具有一定优势")
+    cov_overall_txt = "两侧覆盖率基本相当" if cov_parity else f"{cov_leader} 的覆盖率更高"
     mismatch_is_top1 = diff_sources[0][0] == "双方分类不一致"
     source_concl = ("分类分歧是主要差异来源，而非单方覆盖缺失"
                     if mismatch_is_top1 else "单方覆盖缺失是主要差异来源，而非分类分歧")
+    # ⚠️ 「差异交易主要集中在哪几类」不再写死：按板块差异笔数（segment_summary，取自完整的
+    # 37×37 类别矩阵，不是 Top 20 流向）排序取前三。板块口径互相重叠，占比不能加总，此处仅用排序。
+    segment_diff_counts = {group: m.segment_summary(group)["total"] for group in GROUP_ORDER}
+    focus_groups = sorted(GROUP_ORDER, key=lambda g: -segment_diff_counts[g])[:3]
+    focus_txt = "、".join(focus_groups) if focus_groups else "部分类别"
+    # ⚠️ 结论句必须跟随实际排名（T4）：mismatch 排第一时才说「并非覆盖不足」；
+    # 否则要点明缺口来自哪个来源，不能留一句与上方排名打架的无条件断言。
+    if mismatch_is_top1:
+        problem_txt = "当前主要问题并非覆盖不足，而是部分类别下双方分类规则和边界不一致"
+        action_txt = f"后续优化应优先聚焦{focus_txt}场景，推动分类标准对齐与差异治理"
+    else:
+        problem_txt = (f"当前主要问题并非分类规则分歧，而是 {diff_sources[0][0]} 所反映的覆盖缺口"
+                       f"（占差异总数 {fmt_pct(diff_sources[0][1])}）")
+        action_txt = f"后续优化应优先聚焦{focus_txt}场景，补齐单侧覆盖缺口"
     summary_diff_txt = "，".join(
         f"{name}占比最高，为 {fmt_pct(share)}" if i == 0 else f"{name}占 {fmt_pct(share)}"
         for i, (name, share) in enumerate(diff_sources))
     summary = (
         f"本次评估显示，{cov_leader} 的分类覆盖率为 {fmt_pct(leader_cov)}，"
-        f"{cmp_txt} {cov_follower} 的 {fmt_pct(follower_cov)}，"
-        f"说明 {cov_leader} 覆盖率基本持平于 {cov_follower}，{cov_leader} 在覆盖范围上具有一定优势。"
+        f"{cmp_txt} {cov_follower} 的 {fmt_pct(follower_cov)}（相差 {cov_gap_pp:.2f} 个百分点），"
+        f"说明{edge_txt}。"
         f"在双方均给出分类的交易中，分类一致率达到 {fmt_pct(m.joint_agreement)}，"
         f"表明两者对同一交易的分类结果整体较为一致。"
         f"在存在差异的交易中，{summary_diff_txt}，说明{source_concl}。"
-        f"差异交易主要集中在转账类、高频消费类及部分负债类。"
-        f"总体来看，{cov_leader} 的核心特征是覆盖更广，但覆盖范围的扩大也引入了更多分类差异；"
-        f"当前主要问题并非覆盖不足，而是部分类别下双方分类规则和边界不一致。"
-        f"后续优化应优先聚焦转账、高频消费和部分负债类场景，推动分类标准对齐与差异治理。"
+        f"差异交易主要集中在{focus_txt}。"
+        f"总体来看，{cov_overall_txt}。"
+        f"{problem_txt}。"
+        f"{action_txt}。"
     )
     add_para(doc, summary, size=10.5)
     add_callout(doc, "本段为报告的核心结论：两侧覆盖率对比、双方均分类交易的一致率、差异构成，以及主要差异来源。")
@@ -1329,12 +1351,22 @@ def build_report(doc: Document, analysis: Analysis, chart_png: Optional[Path] = 
     d1_name, d1_share = diff_sources[0]
     d2_name, d2_share = diff_sources[1]
     d3_name, d3_share = diff_sources[2]
-    cov_gap_pp = abs(to_float(m.finv_coverage) - to_float(m.illion_coverage)) * 100
+    # cov_gap_pp 已在执行摘要处算过（同一个差值），此处不再重复定义，避免两处口径漂移
     # 2.1 正文（严谨表述）：覆盖率对比 → 共同覆盖内一致率 → 并集口径 → 口径落差来源
-    coverage_degree = "略广" if cov_gap_pp < 1.0 else "更广"
+    # ⚠️ 转折语必须与执行摘要的 cov_parity 同源：此前只按 gap < 1.0 分「略广 / 更广」，
+    # 两侧真正持平（gap 0.00）时会写出「高出 0.00 个百分点，覆盖范围略广」这种自相矛盾的话。
+    coverage_degree = "基本相当" if cov_parity else "更广"
+    cov_cmp_txt = (
+        f"在覆盖率上，{cov_leader}（{fmt_pct(leader_cov)}）与 {cov_follower}"
+        f"（{fmt_pct(follower_cov)}）相差 {cov_gap_pp:.2f} 个百分点，覆盖范围{coverage_degree}"
+        if cov_parity else
+        f"在覆盖率上，{cov_leader}（{fmt_pct(leader_cov)}）较 {cov_follower}"
+        f"（{fmt_pct(follower_cov)}）高出 {cov_gap_pp:.2f} 个百分点，覆盖范围{coverage_degree}"
+    )
+    # 收尾句的「覆盖更广」也不能复用 coverage_degree（那是形容词，接不上「{cov_leader} ___」的语法）
+    cov_concl_txt = "覆盖范围与对方基本相当" if cov_parity else "覆盖更广"
     p1 = (
-        f"在覆盖率上，{cov_leader}（{fmt_pct(leader_cov)}）较 {cov_follower}（{fmt_pct(follower_cov)}）"
-        f"高出 {cov_gap_pp:.2f} 个百分点，覆盖范围{coverage_degree}。"
+        f"{cov_cmp_txt}。"
         f"全部交易中，双方均有分类的占比为 "
         f"{fmt_pct(m.joint_nonempty / m.total_transactions if m.total_transactions else 0)}，"
         f"在这部分交易内，类别一致率达到 {fmt_pct(m.joint_agreement)}，"
@@ -1361,6 +1393,14 @@ def build_report(doc: Document, analysis: Analysis, chart_png: Optional[Path] = 
               font_size=9, align_center_cols={1})
     second_side = "finv 侧" if d2_name == "仅 finv 有值" else "Illion 侧"
     third_side = "finv 侧" if d3_name == "仅 finv 有值" else "Illion 侧"
+    # ⚠️ 收尾句必须跟随上方打印的真实排名（与执行摘要的 mismatch_is_top1 同源分支）：
+    # 此前无论排名如何都断言「整体差异主要源于分类标签分歧」，会与紧邻的排名句互相打架。
+    if mismatch_is_top1:
+        driver_txt = (f"整体差异主要源于分类标签分歧，其次是 {second_side}的额外识别覆盖，"
+                      f"{third_side}的独有识别贡献相对较小")
+    else:
+        driver_txt = (f"整体差异主要源于{d1_name}（一侧识别、另一侧漏判），其次是{d2_name}，"
+                      f"{d3_name}的贡献相对较小")
     p2 = (
         f"{d1_name}占比最高（{fmt_pct(d1_share)}），是最大的差异来源；"
         f"{d2_name}（{fmt_pct(d2_share)}）次之；{d3_name}（{fmt_pct(d3_share)}）再次之。"
@@ -1368,9 +1408,8 @@ def build_report(doc: Document, analysis: Analysis, chart_png: Optional[Path] = 
         f"需说明的是，双方均为空的交易（占全部交易的 "
         f"{fmt_pct(m.both_empty / m.total_transactions if m.total_transactions else 0)}）未纳入差异分析，"
         f"因其不具备分类可比性。"
-        f"综上，{cov_leader} 覆盖略优，但在共同覆盖范围内的一致性较高；"
-        f"整体差异主要源于分类标签分歧，其次是 {second_side}的额外识别覆盖，"
-        f"{third_side}的独有识别贡献相对较小。"
+        f"综上，{cov_leader} {cov_concl_txt}，但在共同覆盖范围内的一致性较高；"
+        f"{driver_txt}。"
     )
     add_para(doc, p2, size=9.5)
 
@@ -1628,6 +1667,9 @@ def build_report(doc: Document, analysis: Analysis, chart_png: Optional[Path] = 
     # 4.5 跨板块优化建议
     add_heading(doc, "3.5 跨板块优化建议", level=2)
     add_para(doc, "综合全景差异结构与类别细探，建议按以下优先级推进优化：", size=9.5)
+    add_callout(doc, "本节为人工撰写的固定检查清单，不随本次数据变化：「优先级」「观察方向」「建议动作」三列是既定的排查经验，"
+                     "与本次底稿的实际排名无关；仅「数据依据」列由本次实际流向计算。若清单指向的类别已不再是本次差异重点，"
+                     "请人工调整本节，不要把它当作本次数据的结论。")
 
     def flow_ref(illion: str, finv: str) -> str:
         count = sum(stat["count"] for (il, fv, _), stat in m.flow_stats.items() if il == illion and fv == finv)

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import os
-from collections import Counter, defaultdict
+import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List
 
 from openpyxl import load_workbook
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -30,16 +29,11 @@ import paths
 
 
 BLUE = colors.HexColor("#1F4E79")
-BLUE_LIGHT = colors.HexColor("#D9EAF7")
 BLUE_PALE = colors.HexColor("#EFF6FC")
 GRAY = colors.HexColor("#666666")
-GRAY_LIGHT = colors.HexColor("#F3F5F7")
 YELLOW_PALE = colors.HexColor("#FFF6D9")
 ORANGE = colors.HexColor("#C98200")
-GREEN = colors.HexColor("#237A57")
-RED = colors.HexColor("#B44B4B")
 
-BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_NAME = "full_category_performance_report_zh.pdf"
 
 
@@ -84,19 +78,6 @@ GROUPS = {
 }
 
 GROUP_OF = {category: group for group, categories in GROUPS.items() for category in categories}
-FOCUS_CATEGORIES = {
-    "External Transfers",
-    "Internal Transfer",
-    "Groceries",
-    "Dining Out",
-    "Retail",
-    "Gambling",
-    "All Other Credits",
-    "Wages",
-    "Rent",
-    "SACC Loans",
-    "Non SACC Loans",
-}
 
 
 def register_fonts() -> None:
@@ -107,12 +88,6 @@ def register_fonts() -> None:
         bold = Path(r"C:\Windows\Fonts\simhei.ttf")
     pdfmetrics.registerFont(TTFont("ReportCN", str(regular)))
     pdfmetrics.registerFont(TTFont("ReportCN-Bold", str(bold)))
-
-
-def clean(value: Any) -> Any:
-    if value is None:
-        return ""
-    return value
 
 
 def to_float(value: Any) -> float:
@@ -159,13 +134,6 @@ def paragraph(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(text, style)
 
 
-def first_existing_sheet(wb, names: Iterable[str]):
-    for name in names:
-        if name in wb.sheetnames:
-            return wb[name]
-    raise KeyError(f"Missing sheets: {list(names)}")
-
-
 def read_core_metrics(wb) -> Dict[str, Dict[str, Any]]:
     ws = wb["00_核心对比"]
     metrics: Dict[str, Dict[str, Any]] = {}
@@ -193,6 +161,19 @@ def read_core_metrics(wb) -> Dict[str, Dict[str, Any]]:
             metrics[label] = value
             metrics[metric_aliases[row_index]] = value
     return metrics
+
+
+def read_generated_date(wb) -> str:
+    """00_核心对比 A2 单元格：'... | 生成时间: 2026-08-27'，提取底稿生成日期（无则返回空串）。
+
+    与 md_zh / md_en / docx 三个生成器的同名函数口径一致，封面「报告日期」不得写死。
+    """
+    for row in wb["00_核心对比"].iter_rows(min_row=2, max_row=2, min_col=1, max_col=1, values_only=True):
+        if row[0]:
+            match = re.search(r"生成时间[:：]\s*(\d{4}-\d{2}-\d{2})", str(row[0]))
+            if match:
+                return match.group(1)
+    return ""
 
 
 def read_categories(wb) -> List[Dict[str, Any]]:
@@ -252,100 +233,19 @@ def read_detail(wb) -> List[Dict[str, Any]]:
         if not any(v not in (None, "") for v in row):
             continue
         detail = {headers[i]: row[i] for i in range(len(headers))}
+        # ⚠️ 别名一律按列名解析，不写死位置：03 表历史上加过列，而这里过去用的是位置索引，
+        # 于是 illion_category 实际取到的是 third_party、finv_category 取到的是 counterparty
+        # —— 23,848 行里 19,939 行的 illion 侧落不进任何板块，build_block_analysis 看到的
+        # 全是非规范分类值。按列名取才能免于下一次加列再次静默错位。
         detail.update({
-            "priority": row[0],
-            "diff_type": row[1],
-            "diff_flow": row[2],
-            "amount": row[6],
-            "dr_cr": row[7],
-            "text": row[8],
-            "illion_category": row[11],
-            "finv_category": row[12],
-            "user_id": row[16],
-            "application_id": row[17],
+            "priority": detail.get("排查优先级"),
+            "diff_type": detail.get("排查类型"),
+            "diff_flow": detail.get("差异流向"),
+            "illion_category": detail.get("illion Category"),
+            "finv_category": detail.get("finv Category"),
         })
         rows.append(detail)
     return rows
-
-
-def detail_category_stats(details: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
-        "illion_diff": 0,
-        "finv_diff": 0,
-        "mismatch": 0,
-        "illion_only": 0,
-        "finv_only": 0,
-        "amount": 0.0,
-        "users": set(),
-        "applications": set(),
-    })
-    for row in details:
-        illion = str(row.get("illion Category") or "").strip()
-        finv = str(row.get("finv Category") or "").strip()
-        diff_type = str(row.get("排查类型") or "").strip()
-        amount = to_float(row.get("amount"))
-        users = row.get("user_id")
-        applications = row.get("application_id")
-        for category, side in ((illion, "illion_diff"), (finv, "finv_diff")):
-            if category and category != "-":
-                stats[category][side] += 1
-                stats[category]["amount"] += amount / 2.0
-                if users not in (None, ""):
-                    stats[category]["users"].add(users)
-                if applications not in (None, ""):
-                    stats[category]["applications"].add(applications)
-        if diff_type == "分类边界冲突":
-            if illion and illion != "-":
-                stats[illion]["mismatch"] += 1
-            if finv and finv != "-":
-                stats[finv]["mismatch"] += 1
-        elif diff_type == "仅illion有分类":
-            if illion and illion != "-":
-                stats[illion]["illion_only"] += 1
-        elif diff_type == "仅finv有分类":
-            if finv and finv != "-":
-                stats[finv]["finv_only"] += 1
-    return stats
-
-
-def category_conclusion(item: Dict[str, Any]) -> str:
-    category = safe_text(item["category"])
-    illion_cov = to_float(item.get("illion覆盖率"))
-    finv_cov = to_float(item.get("finv覆盖率"))
-    inter_share = to_float(item.get("交集占比（并集）"))
-    illion_only = to_float(item.get("illion独有占比（并集）"))
-    finv_only = to_float(item.get("finv独有占比（并集）"))
-    union = to_float(item.get("并集数量"))
-    priority = safe_text(item.get("建议优先级"))
-    if union < 50:
-        volume_note = "并集规模较小，比例指标需结合样本量谨慎解读。"
-    elif union >= 1000:
-        volume_note = "并集规模较大，对总体差异具有较高影响。"
-    else:
-        volume_note = "并集规模处于中等水平。"
-    if inter_share >= 0.9:
-        stability = "双方交集占比较高，分类表现相对稳定。"
-    elif inter_share >= 0.7:
-        stability = "双方存在较好的共同覆盖，但仍有一定单边差异。"
-    else:
-        stability = "双方共同覆盖偏低，应重点检查分类边界、知识库或漏识别问题。"
-    if finv_only > illion_only + 0.05:
-        direction = "finv 独有占比明显高于 Illion 独有占比，体现 finv 的扩展识别，同时需要核验新增分类的合理性。"
-    elif illion_only > finv_only + 0.05:
-        direction = "Illion 独有占比高于 finv 独有占比，提示 finv 可能存在漏识别或归类迁移。"
-    else:
-        direction = "两侧独有占比较为接近，差异更可能来自类别边界或规则口径。"
-    return f"{category}：Illion 覆盖率为 {pct(illion_cov)}，finv 覆盖率为 {pct(finv_cov)}；并集 {num(union)} 笔，交集占比 {pct(inter_share)}。{stability}{direction}{volume_note} 建议优先级为 {priority or '-'}。"
-
-
-def flow_rows_for_category(flows: List[Dict[str, Any]], category: str, limit: int = 3) -> List[Dict[str, Any]]:
-    matched = []
-    for flow in flows:
-        source = str(flow.get("illion Category") or "")
-        target = str(flow.get("finv Category") or "")
-        if category in source or category in target:
-            matched.append(flow)
-    return matched[:limit]
 
 
 def table(data: List[List[Any]], widths: List[float], header_rows: int = 1, font_size: float = 7.5, row_bgs: bool = True) -> Table:
@@ -394,8 +294,10 @@ def table(data: List[List[Any]], widths: List[float], header_rows: int = 1, font
 
 
 class ReportDocTemplate(BaseDocTemplate):
-    def __init__(self, filename: str, **kwargs):
+    def __init__(self, filename: str, input_name: str = "", **kwargs):
         super().__init__(filename, **kwargs)
+        # 页脚要显示底稿文件名，draw_page 只能拿到 doc，故挂在模板实例上
+        self.input_name = input_name
         frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id="normal")
         self.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=draw_page)])
 
@@ -408,7 +310,8 @@ def draw_page(canvas, doc) -> None:
     canvas.line(doc.leftMargin, height - 16 * mm, width - doc.rightMargin, height - 16 * mm)
     canvas.setFont("ReportCN", 7.5)
     canvas.setFillColor(GRAY)
-    canvas.drawString(doc.leftMargin, 10 * mm, "BS-CAT Full Category Performance Report | 数据来源: category_difference_report(2).xlsx")
+    source_name = getattr(doc, "input_name", "") or "—"
+    canvas.drawString(doc.leftMargin, 10 * mm, f"BS-CAT Full Category Performance Report | 数据来源: {source_name}")
     canvas.drawRightString(width - doc.rightMargin, 10 * mm, f"第 {doc.page} 页")
     canvas.restoreState()
 
@@ -452,277 +355,6 @@ def add_callout(story: List[Any], text: str, styles: Dict[str, ParagraphStyle], 
     ]))
     story.append(box)
     story.append(Spacer(1, 5))
-
-
-def category_metric_table(item: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> Table:
-    data = [
-        ["类别", "Illion覆盖率", "finv覆盖率", "并集数量", "交集数量", "交集占比（并集）", "Illion独有占比", "finv独有占比"],
-        [
-            safe_text(item["category"]),
-            pct(item.get("illion覆盖率")),
-            pct(item.get("finv覆盖率")),
-            num(item.get("并集数量")),
-            num(item.get("交集数量")),
-            pct(item.get("交集占比（并集）")),
-            pct(item.get("illion独有占比（并集）")),
-            pct(item.get("finv独有占比（并集）")),
-        ],
-    ]
-    widths = [28 * mm, 20 * mm, 20 * mm, 16 * mm, 16 * mm, 22 * mm, 22 * mm, 22 * mm]
-    return table(data, widths, font_size=6.9)
-
-
-def add_category_block(story: List[Any], item: Dict[str, Any], flows: List[Dict[str, Any]], detail_stats: Dict[str, Dict[str, Any]], styles: Dict[str, ParagraphStyle], detailed: bool = False) -> None:
-    category = item["category"]
-    heading = f"{category}  |  {item['group']}"
-    block: List[Any] = [paragraph(heading, styles["h3"]), category_metric_table(item, styles)]
-    block.append(Spacer(1, 3))
-    block.append(paragraph(category_conclusion(item), styles["body"]))
-    extra = detail_stats.get(category, {})
-    if detailed:
-        block.append(paragraph(
-            f"差异侧统计：Illion 侧差异记录 {num(extra.get('illion_diff'))} 笔，finv 侧差异记录 {num(extra.get('finv_diff'))} 笔；"
-            f"其中双方分类不一致 {num(extra.get('mismatch'))} 笔。该侧统计用于定位差异集中区域，不与总体 6,525 笔差异直接相加。",
-            styles["small"],
-        ))
-        flow_matches = flow_rows_for_category(flows, category, limit=3)
-        if flow_matches:
-            rows = [["排名", "Illion类别", "finv类别", "类型", "数量", "差异金额"]]
-            for idx, flow in enumerate(flow_matches, start=1):
-                rows.append([
-                    idx,
-                    safe_text(flow.get("illion Category")),
-                    safe_text(flow.get("finv Category")),
-                    safe_text(flow.get("差异类型")),
-                    num(flow.get("数量")),
-                    money(flow.get("差异金额")),
-                ])
-            block.append(table(rows, [12 * mm, 34 * mm, 34 * mm, 28 * mm, 18 * mm, 25 * mm], font_size=7.0))
-    else:
-        block.append(paragraph("该类别按统一七项指标完成分析；详细差异流向见附录类别评分表。", styles["small"]))
-    story.append(KeepTogether(block))
-    story.append(Spacer(1, 5))
-
-
-def build_report(input_path: Path, output_path: Path) -> Dict[str, Any]:
-    register_fonts()
-    wb = load_workbook(input_path, data_only=True, read_only=True)
-    metrics = read_core_metrics(wb)
-    categories = read_categories(wb)
-    flows = read_flows(wb)
-    details = read_detail(wb)
-    detail_stats = detail_category_stats(details)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    doc = ReportDocTemplate(
-        str(output_path),
-        pagesize=A4,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
-        topMargin=23 * mm,
-        bottomMargin=17 * mm,
-        title="BS-CAT 全分类类别表现分析报告",
-        author="Codex",
-    )
-    styles = build_styles()
-    story: List[Any] = []
-
-    total_transactions = metrics.get("总交易数", {}).get("result", 0)
-    illion_cov = metrics.get("illion Category 覆盖率", {}).get("result", 0)
-    finv_cov = metrics.get("finv Category 覆盖率", {}).get("result", 0)
-    joint_agreement = metrics.get("双方非空时一致率", {}).get("result", 0)
-    adjusted_agreement = metrics.get("覆盖调整后一致率", {}).get("result", 0)
-    direction_illion = metrics.get("相对illion的方向性差异率", {}).get("result", 0)
-    direction_finv = metrics.get("相对finv的方向性差异率", {}).get("result", 0)
-    diff_total = metrics.get("Category 差异总数", {}).get("result", 0)
-    illion_only = metrics.get("仅 illion 有 Category", {}).get("result", 0)
-    finv_only = metrics.get("仅 finv 有 Category", {}).get("result", 0)
-    both_empty = metrics.get("双方均为空", {}).get("result", 0)
-    mismatch = metrics.get("双方非空时差异率", {}).get("numerator", 0)
-
-    # Cover page
-    story.append(Spacer(1, 18 * mm))
-    story.append(paragraph("BS-CAT 全分类类别表现分析报告", styles["title"]))
-    story.append(paragraph("Income, Expense, Transfer and Liability Category Performance", styles["subtitle"]))
-    story.append(Spacer(1, 8 * mm))
-    cover_table = table([
-        ["样本范围", "分类范围", "数据侧", "报告日期"],
-        [f"{num(total_transactions)} 笔交易", "36 个类别", "illion vs finv / BS-CAT", "2026-08-19"],
-    ], [42 * mm, 42 * mm, 42 * mm, 42 * mm], font_size=8.5)
-    story.append(cover_table)
-    story.append(Spacer(1, 16 * mm))
-    add_callout(story, "本报告基于 category_difference_report(2).xlsx 自动生成。报告将收入、支出、转账和负债类别统一纳入全分类分析；负债部分保留类别指标摘要，不重复展开已有 Liability 专项报告。", styles)
-    story.append(Spacer(1, 24 * mm))
-    story.append(paragraph("数据来源", styles["h2"]))
-    story.append(paragraph("Excel 底稿：00_核心对比、01_差异诊断地图、03_排查明细、04_模型监控。类别指标以 00_核心对比中的 36 个类别行作为主口径。", styles["body"]))
-    story.append(PageBreak())
-
-    # 1 Summary
-    add_section_header(story, "1. Summary", styles)
-    story.append(paragraph(
-        f"本次评估包含 {num(total_transactions)} 笔交易和 36 个类别，覆盖收入、支出、负债三大业务类别，并将 External Transfers 与 Internal Transfer 作为独立的转账专项进行分析。",
-        styles["body"],
-    ))
-    joint_nonempty = metrics.get("双方非空时一致率", {}).get("denominator", 0)
-    add_callout(
-        story,
-        f"总体结论：在 {num(total_transactions)} 笔交易中，illion 分类覆盖率为 {pct(illion_cov)}，finv 分类覆盖率为 {pct(finv_cov)}，finv 覆盖率高于 Illion {pct(to_float(finv_cov) - to_float(illion_cov))}。在双方均有非空分类的 {num(joint_nonempty)} 笔交易中，分类一致率为 {pct(joint_agreement)}。因此，finv 的主要表现特征是覆盖范围更广，同时双方在已完成分类的交易上保持较高的一致性。",
-        styles,
-    )
-
-    story.append(paragraph("1.1 差异结构总览", styles["h2"]))
-    diff_table = table([
-        ["差异类型", "数量", "占差异总数", "分析含义"],
-        ["双方分类不一致", num(mismatch), pct(to_float(mismatch) / to_float(diff_total) if diff_total else 0), "两侧均有分类，但类别标签不同"],
-        ["仅 illion 有值", num(illion_only), pct(to_float(illion_only) / to_float(diff_total) if diff_total else 0), "finv 侧缺少分类"],
-        ["仅 finv 有值", num(finv_only), pct(to_float(finv_only) / to_float(diff_total) if diff_total else 0), "finv 新增识别或 Illion 漏识别"],
-        ["总差异数", num(diff_total), "100.00%", "分类不一致与单边缺失的合计"],
-        ["双方均为空", num(both_empty), "不纳入", "不进入差异流向和类别差异分析"],
-    ], [38 * mm, 22 * mm, 25 * mm, 85 * mm], font_size=7.8)
-    story.append(diff_table)
-    add_callout(story, f"仅 finv 有值共 {num(finv_only)} 笔，占差异总数 {pct(to_float(finv_only) / to_float(diff_total) if diff_total else 0)}，是最大差异来源。差异集中区域主要包括转账类、高频消费类和贷款类；其中 Rent 作为支出类别单独进行重点分析。", styles, background=YELLOW_PALE, edge=ORANGE)
-
-    # 2 scope
-    add_section_header(story, "2. Category Grouping and Analysis Scope", styles)
-    story.append(paragraph("本报告使用三大业务类别加一个转账专项的分析口径。转账类不归入收入或支出，不参与收入合计和支出合计，但纳入总体覆盖率、差异率和分类迁移影响分析。每个类别均按照 Illion 覆盖率、finv 覆盖率、并集数量、交集数量、交集占比（并集）、Illion 独有占比和 finv 独有占比七项核心指标进行分析。", styles["body"]))
-    grouping_rows = [["分析组", "类别数", "类别范围", "报告处理"]]
-    handling = {
-        "收入类": "完整分析",
-        "支出类": "完整分析，Rent 重点展开",
-        "负债类": "保留七项指标，压缩为摘要",
-        "转账专项": "独立分析，不并入收入或支出",
-    }
-    for group, categories_in_group in GROUPS.items():
-        grouping_rows.append([group, len(categories_in_group), ", ".join(categories_in_group), handling[group]])
-    story.append(table(grouping_rows, [24 * mm, 14 * mm, 94 * mm, 38 * mm], font_size=6.9))
-    story.append(PageBreak())
-
-    # 3 overall performance
-    add_section_header(story, "3. Overall Category Performance", styles)
-    story.append(paragraph("36 个类别的主指标来自底稿中的逐 Category 对比表。交集占比用于衡量该类别的共同覆盖程度；两侧独有占比用于识别新增识别、漏识别和分类边界问题。", styles["body"]))
-    top_union = sorted(categories, key=lambda x: to_float(x.get("并集数量")), reverse=True)[:10]
-    top_diff = sorted(categories, key=lambda x: to_float(x.get("side_diff_count")), reverse=True)[:10]
-    story.append(paragraph("3.1 并集规模最大的类别", styles["h2"]))
-    union_rows = [["排名", "类别", "分析组", "并集数量", "交集数量", "交集占比", "finv独有占比"]]
-    for idx, item in enumerate(top_union, 1):
-        union_rows.append([idx, item["category"], item["group"], num(item.get("并集数量")), num(item.get("交集数量")), pct(item.get("交集占比（并集）")), pct(item.get("finv独有占比（并集）"))])
-    story.append(table(union_rows, [11 * mm, 36 * mm, 23 * mm, 22 * mm, 22 * mm, 25 * mm, 25 * mm], font_size=7.5))
-    story.append(Spacer(1, 7))
-    story.append(paragraph("3.2 类别侧差异集中度", styles["h2"]))
-    story.append(paragraph("以下按 Illion 独有数量与 finv 独有数量之和进行类别侧差异排名。该排名用于定位差异集中类别，不能将各类别差异数量再次相加作为总体差异总数。", styles["small"]))
-    diff_rows = [["排名", "类别", "分析组", "类别并集", "交集占比", "Illion独有数", "finv独有数", "类别侧差异数"]]
-    for idx, item in enumerate(top_diff, 1):
-        diff_rows.append([idx, item["category"], item["group"], num(item.get("并集数量")), pct(item.get("交集占比（并集）")), num(item.get("illion_only_count")), num(item.get("finv_only_count")), num(item.get("side_diff_count"))])
-    story.append(table(diff_rows, [10 * mm, 31 * mm, 22 * mm, 18 * mm, 22 * mm, 21 * mm, 21 * mm, 24 * mm], font_size=7.1))
-    story.append(Spacer(1, 7))
-    story.append(PageBreak())
-    story.append(paragraph("3.3 Top 差异流向", styles["h2"]))
-    flow_rows = [["排名", "Illion类别", "finv类别", "差异类型", "数量", "差异金额", "优先级"]]
-    for idx, flow in enumerate(flows[:20], 1):
-        flow_rows.append([idx, safe_text(flow.get("illion Category")), safe_text(flow.get("finv Category")), safe_text(flow.get("差异类型")), num(flow.get("数量")), money(flow.get("差异金额")), safe_text(flow.get("建议优先级"))])
-    story.append(table(flow_rows, [10 * mm, 30 * mm, 30 * mm, 28 * mm, 16 * mm, 25 * mm, 18 * mm], font_size=6.9))
-    story.append(PageBreak())
-
-    # 4 difference decomposition
-    add_section_header(story, "4. Difference Decomposition", styles)
-    story.append(paragraph("差异分析分为两个层次：第一层是交易样本层面的总体差异结构；第二层是类别侧的差异集中度。总体差异采用互斥口径，类别侧排名用于定位重点类别，不与总体差异总数直接相加。", styles["body"]))
-    story.append(paragraph("4.1 总体差异结构", styles["h2"]))
-    story.append(diff_table)
-    story.append(Spacer(1, 7))
-    story.append(paragraph("4.2 差异集中类别的拆解", styles["h2"]))
-    story.append(paragraph("类别层面同时观察两侧覆盖率、并集规模、交集规模和两侧独有占比。高并集且低交集占比的类别是优先排查对象；高 finv 独有占比类别需要进一步验证新增识别是否合理；高 Illion 独有占比类别需要排查 finv 漏识别。", styles["body"]))
-    story.append(table(diff_rows, [10 * mm, 31 * mm, 22 * mm, 18 * mm, 22 * mm, 21 * mm, 21 * mm, 24 * mm], font_size=7.1))
-    story.append(Spacer(1, 7))
-    story.append(paragraph("4.3 差异流向的业务解释", styles["h2"]))
-    story.append(paragraph("重点解释转账与收入的边界、高频消费类别之间的边界，以及 finv 独有分类的覆盖扩展。Rent 在支出模块中单列，不因类别侧差异排名低于转账类而降低分析优先级。", styles["body"]))
-    story.append(PageBreak())
-
-    # 5 income
-    add_section_header(story, "5. Income Category Analysis", styles)
-    story.append(paragraph("收入类包括 Wages、Centrelink 和 All Other Credits，不包含 External Transfers 与 Internal Transfer。每个类别使用七项核心指标；收入与转账之间的分类迁移在第 7 章单独说明。", styles["body"]))
-    for item in categories:
-        if item["group"] == "收入类":
-            add_category_block(story, item, flows, detail_stats, styles, detailed=True)
-    story.append(PageBreak())
-
-    # 6 expense
-    add_section_header(story, "6. Expense Category Analysis", styles)
-    story.append(paragraph("支出类共 23 个类别。类别层面统一展示七项核心指标；Groceries、Dining Out、Retail、Automotive、Gambling、Utilities 和 Rent 作为高频或重点边界类别增加差异流向说明。", styles["body"]))
-    for item in categories:
-        if item["group"] == "支出类":
-            add_category_block(story, item, flows, detail_stats, styles, detailed=item["category"] in FOCUS_CATEGORIES or item["category"] == "Utilities")
-    story.append(PageBreak())
-
-    # Rent focus
-    rent = next((item for item in categories if item["category"] == "Rent"), None)
-    if rent:
-        add_section_header(story, "6.1 Rent Deep Dive", styles)
-        story.append(paragraph("Rent 是支出模块的重点类别。除七项核心指标外，本节关注 Rent 与转账、Utilities 和 Home Improvement 的边界，重点判断 finv 独有识别是合理扩展还是潜在误归类。", styles["body"]))
-        add_category_block(story, rent, flows, detail_stats, styles, detailed=True)
-        add_callout(story, "Rent 的类别结论应同时结合覆盖率、交集占比和差异流向，不应只根据交易数量或类别差异率判断模型表现。", styles, background=YELLOW_PALE, edge=ORANGE)
-        story.append(PageBreak())
-
-    # 7 transfers
-    add_section_header(story, "7. Transfer Special Analysis", styles)
-    story.append(paragraph("External Transfers 和 Internal Transfer 不归入收入或支出。两类转账按 credit / debit 方向单独观察，并分析其与 Wages、All Other Credits 和 Rent 的分类边界。", styles["body"]))
-    for item in categories:
-        if item["group"] == "转账专项":
-            add_category_block(story, item, flows, detail_stats, styles, detailed=True)
-    add_callout(story, "转账类的报告处理原则：保留在总体覆盖率、差异率和分类迁移分析中，但不计入收入合计、支出合计或净收入计算。", styles)
-    story.append(PageBreak())
-
-    # 8 liability summary
-    add_section_header(story, "8. Liability Category Summary", styles)
-    story.append(paragraph("负债类在本报告中保留 8 个类别的统一七项指标，用于完整覆盖 36 个类别的总体表现；贷款生命周期、Counterparty matching、Dishonours 和 Unknown Loans 根因不在本报告重复展开。", styles["body"]))
-    for item in categories:
-        if item["group"] == "负债类":
-            add_category_block(story, item, flows, detail_stats, styles, detailed=False)
-    add_callout(story, "Liability Module 的详细结论应以已有专项报告为准。本报告仅保留负债类别在全分类差异结构中的指标表现和类别侧定位。", styles, background=YELLOW_PALE, edge=ORANGE)
-    story.append(PageBreak())
-
-    # 9 action plan
-    add_section_header(story, "9. Cross-Category Action Plan", styles)
-    action_rows = [
-        ["优先方向", "建议动作", "对应类别"],
-        ["验证 finv 独有识别", "抽样核验新增分类是否合理，区分覆盖扩展与误归类", "External Transfers、All Other Credits、Retail、Dining Out、Unknown Loans"],
-        ["排查 Illion 独有识别", "检查 finv 是否存在漏识别、文本清洗或知识库缺口", "External Transfers、Groceries、Non SACC Loans、Gambling"],
-        ["优化转账边界", "拆分 credit/debit，明确中性转移不进入收入或支出合计", "External Transfers、Internal Transfer"],
-        ["优化 Rent 边界", "重点复核 Rent 与转账、Utilities、Home Improvement 的规则边界", "Rent、Utilities、Home Improvement"],
-        ["优化高频消费边界", "针对高并集、低交集占比类别建立样本集和规则回归集", "Groceries、Dining Out、Retail、Automotive、Gambling"],
-        ["引用专项结果", "不在本报告重复做贷款生命周期和 Dishonours 深度分析", "全部负债类别"],
-    ]
-    story.append(table(action_rows, [29 * mm, 89 * mm, 52 * mm], font_size=7.4))
-    story.append(Spacer(1, 8))
-    story.append(paragraph("后续迭代建议：每次模型或知识库更新后，重新计算 36 个类别的七项核心指标，并重点监控交集占比、finv 独有占比、Illion 独有占比以及 Rent 和转账类的差异流向。", styles["body"]))
-    story.append(PageBreak())
-
-    # 10 appendix full scorecard
-    add_section_header(story, "10. Appendix: 36-Category Scorecard", styles)
-    story.append(paragraph("以下为 36 个类别的完整七项指标。该表是本报告的核心可审计明细，所有类别均使用相同口径。注：类别侧指标用于解释该类别的共同覆盖和单边差异；类别之间的交叉错分会同时出现在源类别和目标类别的类别侧视角中，因此类别侧差异排名不能直接加总为总体差异数。", styles["body"]))
-    score_rows = [["类别", "分析组", "Illion覆盖率", "finv覆盖率", "并集", "交集", "交集占比", "Illion独有占比", "finv独有占比"]]
-    for item in categories:
-        score_rows.append([
-            item["category"], item["group"], pct(item.get("illion覆盖率")), pct(item.get("finv覆盖率")),
-            num(item.get("并集数量")), num(item.get("交集数量")), pct(item.get("交集占比（并集")),
-            pct(item.get("illion独有占比（并集")), pct(item.get("finv独有占比（并集")),
-        ])
-    # The source headers contain closing Chinese brackets; normalize if a key lookup above misses.
-    for row_idx, item in enumerate(categories, start=1):
-        score_rows[row_idx] = [
-            item["category"], item["group"], pct(item.get("illion覆盖率")), pct(item.get("finv覆盖率")),
-            num(item.get("并集数量")), num(item.get("交集数量")), pct(item.get("交集占比（并集）")),
-            pct(item.get("illion独有占比（并集）")), pct(item.get("finv独有占比（并集）")),
-        ]
-    story.append(table(score_rows, [26 * mm, 20 * mm, 18 * mm, 18 * mm, 14 * mm, 14 * mm, 19 * mm, 20 * mm, 20 * mm], font_size=6.2, row_bgs=True))
-
-    doc.build(story)
-    return {
-        "output": str(output_path),
-        "categories": len(categories),
-        "details": len(details),
-        "flows": len(flows),
-        "metrics": metrics,
-    }
 
 
 # The rebuilt report uses stable ASCII aliases internally and keeps the Chinese labels
@@ -878,6 +510,7 @@ def build_report_v2(input_path: Path, output_path: Path) -> Dict[str, Any]:
     register_fonts()
     wb = load_workbook(input_path, data_only=True, read_only=True)
     metrics = read_core_metrics(wb)
+    generated_date = read_generated_date(wb)
     categories = read_categories(wb)
     flows = read_flows(wb)
     details = read_detail(wb)
@@ -886,7 +519,8 @@ def build_report_v2(input_path: Path, output_path: Path) -> Dict[str, Any]:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc = ReportDocTemplate(
-        str(output_path), pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm,
+        str(output_path), input_name=input_path.name,
+        pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm,
         topMargin=23 * mm, bottomMargin=17 * mm,
         title="BS-CAT 全分类类别表现分析报告", author="Codex",
     )
@@ -911,7 +545,7 @@ def build_report_v2(input_path: Path, output_path: Path) -> Dict[str, Any]:
     story.append(Spacer(1, 8 * mm))
     story.append(table([
         ["样本范围", "分类范围", "比较对象", "报告日期"],
-        [f"{num(total_transactions)} 笔交易", "36 个类别", "illion vs finv / BS-CAT", "2026-08-19"],
+        [f"{num(total_transactions)} 笔交易", "36 个类别", "illion vs finv / BS-CAT", generated_date],
     ], [42 * mm, 42 * mm, 42 * mm, 42 * mm], font_size=8.5))
     story.append(Spacer(1, 16 * mm))
     add_callout(story, "本报告按新的三部分逻辑生成：执行摘要、差异结构全景、分业务板块的类型细探。对底稿中没有提供的字段不作推断，相关位置留空。", styles)
@@ -922,10 +556,66 @@ def build_report_v2(input_path: Path, output_path: Path) -> Dict[str, Any]:
 
     # Part 1: Execution summary
     add_section_header(story, "1. 执行摘要", styles)
-    story.append(paragraph(
-        f"本次评估覆盖 {num(total_transactions)} 笔交易和 {category_count} 个类别，涉及收入、支出、负债三大业务板块，并将 External Transfers 与 Internal Transfer 作为独立的转账板块进行分析。Illion 分类覆盖率为 {pct(illion_coverage)}，finv 分类覆盖率为 {pct(finv_coverage)}，finv 的覆盖范围高于 Illion；在双方均有非空分类的 {num(joint_nonempty)} 笔交易中，分类一致率达到 {pct(joint_agreement)}，说明双方在已完成分类的交易上具有较高的一致性。总体来看，finv 的主要特征是覆盖更广，但新增覆盖也带来了更多差异；当前 {num(diff_total)} 笔差异中，仅 finv 有值占 {pct(to_float(finv_only) / to_float(diff_total) if diff_total else None)}，差异主要集中在转账类、高频消费类和部分负债类，其中 Rent 作为支出类别需要进行专项关注。",
-        styles["body"],
-    ))
+
+    # 差异来源排名：结论句必须跟随实际排名，不得写死（与 md_zh 的 mismatch_is_top1 同口径）
+    diff_sources = sorted(
+        [("双方分类不一致", to_float(mismatch)),
+         ("仅 Illion 有值", to_float(illion_only)),
+         ("仅 finv 有值", to_float(finv_only))],
+        key=lambda source: -source[1])
+    top_source, top_source_count = diff_sources[0]
+    mismatch_is_top1 = top_source == "双方分类不一致"
+    top_source_share = top_source_count / to_float(diff_total) if to_float(diff_total) else 0
+
+    # 覆盖方向：按两侧实际覆盖率定，不得写死
+    cov_leader = "finv" if to_float(finv_coverage) >= to_float(illion_coverage) else "Illion"
+    cov_follower = "Illion" if cov_leader == "finv" else "finv"
+    cov_gap_pp = abs(to_float(finv_coverage) - to_float(illion_coverage)) * 100
+    cov_parity = cov_gap_pp < 1.0
+    coverage_cmp_txt = (
+        f"两侧覆盖率基本持平（相差 {cov_gap_pp:.2f} 个百分点）" if cov_parity
+        else f"{cov_leader} 的覆盖率高于 {cov_follower} {cov_gap_pp:.2f} 个百分点")
+    # 「覆盖更广」必须与上面的持平判定同源：写死会在两侧持平时与上一句自相矛盾
+    cov_overall_txt = (
+        "两侧覆盖率基本持平，覆盖范围的差异不是本次差异的主要来源" if cov_parity
+        else f"{cov_leader} 的主要特征是覆盖更广，新增覆盖也带来了更多差异")
+
+    # 差异集中的板块：按「涉及该板块的差异行数」排名，不得写死。
+    # ⚠️ 用 |A ∪ B| = illion_side + finv_side − within，不能用两者之和：
+    # 跨板块流向会被两侧各计一次（且会漏掉同时属于两侧的 within 行），排名会被转账类这类
+    # 大板块系统性拉高。该口径与 md/docx 的 segment_summary 一致。
+    block_summary = block_analysis["summary"]
+
+    def _block_rows(group: str) -> float:
+        stat = block_summary.get(group, {})
+        return to_float(stat.get("illion_side")) + to_float(stat.get("finv_side")) - to_float(stat.get("within"))
+
+    block_rank = sorted(REPORT_GROUP_ORDER, key=lambda group: -_block_rows(group))
+    top_blocks_txt = "、".join(REPORT_GROUP_LABELS[group] for group in block_rank[:3])
+
+    # Rent 专项提示仅在 Rent 确实出现在 Top 差异流向时才提
+    top_flow_categories = {str(flow.get("illion_category") or "") for flow in flows[:10]}
+    top_flow_categories |= {str(flow.get("finv_category") or "") for flow in flows[:10]}
+    rent_note = "，其中 Rent 作为支出类别需要进行专项关注" if "Rent" in top_flow_categories else ""
+
+    # 结论句与上面的排名同向：覆盖缺失占优时不能再说「并非覆盖不足」
+    source_concl = (
+        "当前主要问题并非覆盖不足，而是部分类别下双方分类规则和边界不一致"
+        if mismatch_is_top1
+        else f"当前主要问题并非分类规则分歧，而是 {top_source} 反映的覆盖缺口")
+
+    summary = (
+        f"本次评估覆盖 {num(total_transactions)} 笔交易和 {category_count} 个类别，"
+        f"涉及收入、支出、负债三大业务板块，并将 External Transfers 与 Internal Transfer 作为独立的转账板块进行分析。"
+        f"Illion 分类覆盖率为 {pct(illion_coverage)}，finv 分类覆盖率为 {pct(finv_coverage)}，{coverage_cmp_txt}；"
+        f"在双方均有非空分类的 {num(joint_nonempty)} 笔交易中，分类一致率达到 {pct(joint_agreement)}，"
+        f"说明双方在已完成分类的交易上具有较高的一致性。"
+        f"总体来看，{cov_overall_txt}；"
+        f"当前 {num(diff_total)} 笔差异中，{top_source}占 {pct(top_source_share)}，为最大的差异来源，"
+        f"差异主要分布在{top_blocks_txt}{rent_note}。"
+        f"{source_concl}。"
+    )
+    story.append(paragraph(summary, styles["body"]))
     add_callout(story, "本段为报告的核心结论，读者可仅通过本段掌握样本范围、两侧覆盖率、双方非空一致率和主要差异来源。", styles, background=YELLOW_PALE, edge=ORANGE)
     story.append(PageBreak())
 
@@ -942,7 +632,7 @@ def build_report_v2(input_path: Path, output_path: Path) -> Dict[str, Any]:
         ["双方均为空", num(both_empty), "不纳入", "不进入差异流向和类别差异分析"],
     ], [38 * mm, 22 * mm, 25 * mm, 85 * mm], font_size=7.8)
     story.append(diff_table)
-    add_callout(story, f"仅 finv 有值共 {num(finv_only)} 笔，占差异总数 {pct(to_float(finv_only) / to_float(diff_total) if diff_total else None)}，是当前最大的差异来源。", styles, background=YELLOW_PALE, edge=ORANGE)
+    add_callout(story, f"{top_source}共 {num(top_source_count)} 笔，占差异总数 {pct(top_source_share)}，是当前最大的差异来源。", styles, background=YELLOW_PALE, edge=ORANGE)
 
     story.append(paragraph("2.2 业务板块定义", styles["h2"]))
     grouping_rows = [["业务板块", "类别数", "类别范围", "处理方式"]]
@@ -1027,6 +717,7 @@ def build_report_v2(input_path: Path, output_path: Path) -> Dict[str, Any]:
 
     story.append(PageBreak())
     story.append(paragraph("3.5 跨板块观察与建议", styles["h2"]))
+    add_callout(story, "本节为人工撰写的固定检查清单，不随本次数据变化：「观察方向」「建议动作」以及下面的优先级判断均为既定排查经验，仅「数据情况」列说明底稿能提供什么。若清单指向的类别已不再是本次差异重点，请人工调整本节，不要将本节当作本次数据的结论。", styles)
     story.append(paragraph("跨板块优化建议应优先围绕转账与收入、转账与 Rent、高频消费类别边界以及 finv 独有分类的合理性验证展开。具体优先级以 Top 差异流向和类别七项指标共同判断。", styles["body"]))
     action_rows = [
         ["观察方向", "建议动作", "数据情况"],

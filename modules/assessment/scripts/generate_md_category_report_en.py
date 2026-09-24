@@ -2115,16 +2115,40 @@ def build_report_en(doc: Document, analysis: Analysis, chart_png: Optional[Path]
     cov_follower = "Illion" if cov_leader == "finv" else "finv"
     leader_cov = m.finv_coverage if cov_leader == "finv" else m.illion_coverage
     follower_cov = m.illion_coverage if cov_leader == "finv" else m.finv_coverage
-    cmp_txt = "slightly above" if abs(to_float(m.finv_coverage) - to_float(m.illion_coverage)) < 0.05 else "above"
-    mismatch_is_top1 = diff_sources[0][0] == "双方分类不一致"
     gap_pp = abs(to_float(m.finv_coverage) - to_float(m.illion_coverage)) * 100
+    # ⚠️ The "slightly above / above" wording and the "broadly on a par / modest edge" claim must share a
+    # single judgement. The summary used a 0.05 *fraction* threshold (≈5 pp) while Section 2.1's
+    # coverage_degree uses 1.0 pp — the two would contradict each other. Unify on 1.0 pp.
+    cov_parity = gap_pp < 1.0
+    cmp_txt = "broadly on a par with" if cov_parity else "above"
+    edge_txt = ("coverage is broadly on a par between the two sides"
+                if cov_parity else f"{cov_leader} holds a modest edge in coverage")
+    cov_overall_txt = ("coverage is broadly comparable across the two sides"
+                       if cov_parity else f"coverage is wider on the {cov_leader} side")
+    mismatch_is_top1 = diff_sources[0][0] == "双方分类不一致"
     diff_descs = [SRC_EN[name] for name, share in diff_sources]
     d1_name = diff_descs[0]
+    # ⚠️ "which segments the difference rows concentrate in" is no longer hard-coded: rank segments by
+    # their difference row count (segment_summary, from the full 37x37 category matrix, not the Top 20
+    # flows). Segments overlap, so the shares cannot be summed — this is a ranking only.
+    segment_diff_counts = {group: m.segment_summary(group)["total"] for group in GROUP_ORDER}
+    focus_groups = sorted(GROUP_ORDER, key=lambda g: -segment_diff_counts[g])[:3]
+    focus_txt = ", ".join(GROUP_EN[g] for g in focus_groups) if focus_groups else "selected categories"
+    # ⚠️ The closing claim must follow the actual ranking (T4): say "not coverage quantity" only when
+    # mismatch ranks first; otherwise name the source the gap actually comes from.
+    if mismatch_is_top1:
+        problem_txt = ("The headline issue is therefore not coverage quantity but inconsistent rules "
+                       "and boundaries in specific categories")
+        action_txt = f"follow-up work should target {focus_txt}, and align the classification standard"
+    else:
+        problem_txt = (f"The headline issue is therefore not label disagreement but the coverage gap "
+                       f"reflected in {d1_name} ({fmt_pct(diff_sources[0][1])} of all difference rows)")
+        action_txt = f"follow-up work should target {focus_txt}, and close the one-sided coverage gap"
     summary = (
         f"This assessment compares the category labels that Illion and finv assign to the same "
         f"transactions. {cov_leader} assigns a category to {fmt_pct(leader_cov)} of all transactions — "
-        f"{cmp_txt} {cov_follower}'s {fmt_pct(follower_cov)} (a {gap_pp:.2f} pp gap), so coverage is broadly "
-        f"on a par, with {cov_leader} holding a modest edge. Where both sides classify the same "
+        f"{cmp_txt} {cov_follower}'s {fmt_pct(follower_cov)} (a {gap_pp:.2f} pp gap), so {edge_txt}. "
+        f"Where both sides classify the same "
         f"transaction, the two sides' labels agree in {fmt_pct(m.joint_agreement)} of cases, showing that "
         f"the two engines classify the rows they share consistently. Among the {fmt_num(m.diff_total)} "
         f"difference rows, "
@@ -2133,9 +2157,7 @@ def build_report_en(doc: Document, analysis: Analysis, chart_png: Optional[Path]
         f"{SRC_EN[diff_sources[2][0]]} ({fmt_pct(diff_sources[2][1])}) — so the gap is driven first by "
         f"{'how the two sides label the rows they both classify' if mismatch_is_top1 else 'one side recognising rows the other misses'}, "
         f"{'with one-sided coverage secondary' if mismatch_is_top1 else 'with label disagreement secondary'}. "
-        f"Difference rows concentrate in transfers and consumption. The headline issue is therefore not "
-        f"coverage quantity but inconsistent rules and boundaries in specific categories; follow-up work "
-        f"should target transfers and high-frequency consumption, and align the classification standard."
+        f"Difference rows concentrate in {focus_txt}. {problem_txt}; {action_txt}."
     )
     add_para(doc, summary, size=10.5)
     add_callout(doc, "Bottom line: the coverage comparison, the agreement on jointly classified rows, "
@@ -2173,11 +2195,20 @@ def build_report_en(doc: Document, analysis: Analysis, chart_png: Optional[Path]
               [5.6, 3.6, 7.4], font_size=9, align_center_cols={1})
     union_rate = m.diff_total / m.union_nonempty if m.union_nonempty else 0
     d1, d2, d3 = diff_sources
-    cov_gap_pp = abs(to_float(m.finv_coverage) - to_float(m.illion_coverage)) * 100
-    coverage_degree = "slightly wider" if cov_gap_pp < 1.0 else "wider"
+    # gap_pp / cov_parity are computed once in the executive summary (same difference) — do not
+    # redefine them here, so the two sections cannot drift apart.
+    coverage_degree = "broadly comparable" if cov_parity else "wider"
+    # The lead-in must share the executive summary's cov_parity: keying only off gap < 1.0 pp produced
+    # "runs 0.00 pp ahead of ... so its coverage is broadly comparable" when the two sides actually tie.
+    cov_cmp_txt = (
+        f"On coverage, {cov_leader} ({fmt_pct(leader_cov)}) and {cov_follower} "
+        f"({fmt_pct(follower_cov)}) are {gap_pp:.2f} pp apart, so the two sides are {coverage_degree}"
+        if cov_parity else
+        f"On coverage, {cov_leader} ({fmt_pct(leader_cov)}) runs {gap_pp:.2f} pp ahead of "
+        f"{cov_follower} ({fmt_pct(follower_cov)}), so its coverage is {coverage_degree}"
+    )
     p1 = (
-        f"On coverage, {cov_leader} ({fmt_pct(leader_cov)}) runs {cov_gap_pp:.2f} pp ahead of "
-        f"{cov_follower} ({fmt_pct(follower_cov)}), so its coverage is {coverage_degree}. Across all "
+        f"{cov_cmp_txt}. Across all "
         f"transactions, {fmt_pct(m.joint_nonempty / m.total_transactions if m.total_transactions else 0)} "
         f"are classified by both sides, and within that set the two sides' labels agree "
         f"{fmt_pct(m.joint_agreement)} of the time — the two engines judge the rows they share quite "
@@ -2216,7 +2247,7 @@ def build_report_en(doc: Document, analysis: Analysis, chart_png: Optional[Path]
         f"explain about {fmt_pct(d1[1] + d2[1])} of all differences. Rows with neither side classified "
         f"({fmt_pct(m.both_empty / m.total_transactions if m.total_transactions else 0)} of all "
         f"transactions) are excluded from difference analysis because no label comparison is possible. In "
-        f"short, {cov_leader}'s coverage is slightly better, agreement within the shared set is high, and "
+        f"short, {cov_overall_txt}, agreement within the shared set is high, and "
         f"{driver_txt}."
     )
     add_para(doc, p2, size=9.5)
@@ -2523,6 +2554,11 @@ def build_report_en(doc: Document, analysis: Analysis, chart_png: Optional[Path]
     add_heading(doc, "3.5 Cross-Segment Recommendations", level=2)
     add_para(doc, "Combining the overall difference structure with the category deep dives, we recommend "
                   "the following, in priority order:", size=9.5)
+    add_callout(doc, "This section is a fixed, hand-written checklist and does not change with the data: the "
+                     "Priority, What to look at and Recommended action columns are standing review practice, "
+                     "independent of this run's actual ranking. Only the Data basis column is computed from "
+                     "this run's flows. If the categories listed here are no longer where this run's "
+                     "differences are, edit this section by hand — do not read it as this run's conclusion.")
 
     def flow_ref_en(illion: str, finv: str) -> str:
         count = sum(stat["count"] for (il, fv, _), stat in m.flow_stats.items() if il == illion and fv == finv)

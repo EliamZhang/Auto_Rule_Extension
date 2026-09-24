@@ -78,6 +78,13 @@ scripts/
 | `chart_plot` | `generate_coverage_plot.py` | `coverage_gap_preview_b.png` | ✓ |
 | `chart_dotplot` | `generate_dotplot_preview.py` | `dotplot_preview_a.png`、`dotplot_preview_b.png` | ✓ |
 
+> ⚠️ **四份文本报告没有任何共享模块**：`md_zh` / `md_en` / `docx` / `pdf` 只 import 同目录的
+> `paths`，互不 import，同一句正文逐字内联复制在四个文件里（`md_zh` 与 `docx` 甚至逐字节相同）。
+> **改任何一句报告文案必须同时改这 4 个文件**，否则四种格式会各说各的——这个坑真实发生过
+> （`md_en` 的 §2.1 收尾句改成了条件分支，`md_zh` / `docx` 落后很久）。
+> 正文是**手写模板 + 底稿插值**，没有 LLM 参与；哪些断言是写死的、怎么复核，见
+> `.claude/skills/performance-report/SKILL.md` 的「报告叙事的来源与已知陷阱」与「生成后复核（必做）」。
+
 > ⚠️ **落盘文件数不等于生成器数**：默认 4 个生成器产出 **6 个文件**，加上
 > `--with-charts` 的 4 个图表组是 **11 个**（`-` 为默认就有，`+` 仅 `--with-charts`）：
 >
