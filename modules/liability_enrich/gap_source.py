@@ -65,6 +65,7 @@ from common import (  # noqa: E402  (path must be set up first)
 )
 from _shared import (  # noqa: E402
     COUNTERPARTY_RULE_FILE,
+    FLAG_RULE_FILE,
     GENERIC_LOAN_COUNTERPARTY,
     liability_categories,
 )
@@ -95,22 +96,27 @@ STRONG_SIGNAL_RE = re.compile(
 # Counterparty written by finv's generic-loan backstop (liability_engine/pipeline.py).
 GENERIC_LOAN_COUNTERPARTY = "Generic Loans"
 
-_CSV_RULE_FILE = COUNTERPARTY_RULE_FILE
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _load_existing_rules(project_root: Path, config: dict[str, Any]) -> dict[str, Any]:
-    """Summarise what the liability counterparty table already covers.
+def _rule_path(project_root: Path, config: dict[str, Any], filename: str) -> Path:
+    return resolve_rules_base(project_root, config) / "liability_rule" / filename
 
-    The skill needs this to answer two questions per gap: "is this already
-    covered?" and "is this an alias/truncation of a lender I already have?".
-    """
-    path = resolve_rules_base(project_root, config) / "liability_rule" / _CSV_RULE_FILE
+
+def _rel(project_root: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(project_root)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def _summarize_counterparty_rules(project_root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """What `counterparty_keyword_rules.csv` already covers."""
+    path = _rule_path(project_root, config, COUNTERPARTY_RULE_FILE)
     if not path.exists():
         log.warning("未找到现有规则文件: %s", path)
-        return {"source_file": str(path), "row_count": 0, "counterparties": [],
-                "keywords": [], "product_types": {}}
+        return {"source_file": _rel(project_root, path), "row_count": 0,
+                "counterparties": [], "keywords": [], "product_types": {}}
 
     df = pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
 
@@ -126,11 +132,80 @@ def _load_existing_rules(project_root: Path, config: dict[str, Any]) -> dict[str
                 keywords.add(variant)
 
     return {
-        "source_file": str(path.relative_to(project_root)).replace("\\", "/"),
+        "source_file": _rel(project_root, path),
         "row_count": int(len(df)),
         "counterparties": sorted({str(c).strip() for c in df["counterparty"] if str(c).strip()}),
         "keywords": sorted(keywords),
         "product_types": dict(Counter(str(p).strip() for p in df["product_type"] if str(p).strip())),
+    }
+
+
+def _summarize_flag_rules(project_root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """What `home_loan_car_loan_rules.csv` (Format A) already covers.
+
+    Its `pattern` is a **regex** for `regex` rows and a `;`-separated keyword
+    list for `keyword` rows, so the two are reported separately — merging them
+    into one "keywords" list would let the skill mistake half a regex for a
+    merchant name.
+
+    The merchant name lives in `rule_name`, a column the engine's loader
+    ignores. It is the name a human reads and the one `search_merchant.py`
+    searches, so it is the only place a home/car-loan lender's identity is
+    recorded at all.
+    """
+    path = _rule_path(project_root, config, FLAG_RULE_FILE)
+    empty = {
+        "source_file": _rel(project_root, path), "row_count": 0,
+        "merchants": [], "regex_patterns": [], "keyword_patterns": [],
+        "target_fields": {}, "match_scopes": {},
+    }
+    if not path.exists():
+        log.warning("未找到现有规则文件: %s", path)
+        return empty
+
+    df = pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
+
+    regex_patterns: list[str] = []
+    keyword_patterns: list[str] = []
+    for _, row in df.iterrows():
+        pattern = str(row.get("pattern", "")).strip()
+        if not pattern:
+            continue  # 纯条件规则（如 HL009），没有文本模式可列
+        if str(row.get("match_type", "")).strip().lower() == "keyword":
+            keyword_patterns.append(pattern.upper())
+        else:
+            regex_patterns.append(pattern)
+
+    return {
+        "source_file": _rel(project_root, path),
+        "row_count": int(len(df)),
+        "merchants": sorted({str(m).strip() for m in df.get("rule_name", []) if str(m).strip()}),
+        "regex_patterns": sorted(regex_patterns),
+        "keyword_patterns": sorted(keyword_patterns),
+        "target_fields": dict(Counter(str(v).strip() for v in df.get("target_field", []) if str(v).strip())),
+        "match_scopes": dict(Counter(str(v).strip() for v in df.get("match_scope", []) if str(v).strip())),
+    }
+
+
+def _load_existing_rules(project_root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """Summarise what the liability merchant files already cover.
+
+    The skill needs this to answer two questions per gap: "is this already
+    covered?" and "is this an alias/truncation of a merchant I already have?".
+
+    Both files are summarised, because they cover different merchant
+    populations: the counterparty file holds general lenders under
+    `counterparty`, the flag file holds home/car-loan lenders under
+    `rule_name`. Reading only the first is how `Advantedge`,
+    `Toyota Finance` and `Firstmac` get re-proposed as brand-new merchants.
+
+    The flat keys describe the counterparty file (that is what they meant
+    before the two-file contract); the flag file is nested under
+    `flag_rule_file`.
+    """
+    return {
+        **_summarize_counterparty_rules(project_root, config),
+        "flag_rule_file": _summarize_flag_rules(project_root, config),
     }
 
 
@@ -274,8 +349,11 @@ def find_gaps(
         log.info("  → %-26s %d 组模式", name, len(entries))
 
     existing = _load_existing_rules(project_root, config)
-    log.info("现有对照方 %d 个 / keyword %d 条（%s）",
-             len(existing["counterparties"]), len(existing["keywords"]), existing["source_file"])
+    flag = existing["flag_rule_file"]
+    log.info("现有商户 —— %s: 对照方 %d 个 / keyword %d 条",
+             existing["source_file"], len(existing["counterparties"]), len(existing["keywords"]))
+    log.info("           %s: 房贷/车贷商户 %d 个 / 规则 %d 条",
+             flag["source_file"], len(flag["merchants"]), flag["row_count"])
 
     summary = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -303,6 +381,11 @@ def find_gaps(
             "CHARTER MERCANTILE 等真实放贷商），generic_loan_catchall 大量是"
             "「向某个说不出名字的放贷商还款」，不代表能提炼出商户。",
             "pattern_norm 已剥离日期/金额/长数字并大写，仅用于聚类；生成 keyword 时以 samples 为准。",
+            "existing_rules 的顶层键（counterparties / keywords / product_types）描述的是"
+            " counterparty_keyword_rules.csv；home_loan_car_loan_rules.csv 单独放在 "
+            "existing_rules.flag_rule_file 里（商户名在 rule_name 列，pattern 分 regex/keyword 两类）。"
+            "判定「新商户 vs 已有商户别名」时必须两个都查，否则会把 Advantedge / Toyota Finance "
+            "这类已存在的房贷车贷商户重复添加。",
             "本文件只列缺口，不代表任何规则建议。",
         ],
     }

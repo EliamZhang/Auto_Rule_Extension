@@ -62,34 +62,63 @@ cd modules/merchant_kb
 
 ## 流程
 
-### 场景 A：ABR 季度更新（有新的 XML 公告）
+### 场景 A：ABR 全量更新（有新的 XML 公告）
+
+> 上游**每周**重新生成一次（官方 readme v2.6：*the extract is generated weekly*）。
+> 「季度」只是我们自己的跑动节奏，不是上游的发布周期。
+
+#### ⚠️ 先人工下载 —— 脚本做不了，必须先完成
+
+ABR 报文**只能人工去官网拉**：要浏览器 + 澳大利亚网络环境（`.gov.au` 从境外经常连不上）。
+本仓库的脚本一概不碰这一步，`xml_input/` 也永远不入 git。
+
+**入口**（认页面标题 *ABR bulk data file download*）：
+<https://www.abr.gov.au/government-agencies/accessing-abr-data/abr-data-products-and-services/abr-bulk-data-file-download>
+
+数据集正式名 **ABN Lookup Bulk Extract**。下载前先核对：
+
+| 项 | 值 |
+|----|-----|
+| 分卷数 | **20 个** |
+| 文件命名 | `<yyyymmdd>Public01` … `<yyyymmdd>Public20` |
+| 日期含义 | `yyyymmdd` = **当次生成日期**，每次下载都不同 —— 认 `Public01…20` 这个**模式**，别认死某个日期 |
+| 格式 | 每分卷一个 XML；外层可能套 `.zip`，也可能直接给裸 `.xml`，两种都行 |
+| 体积 | 官方 readme(2015) 记 6 GB / 11.7M ABN，现在远大于此 —— **先确认磁盘空间** |
+| 内容 | active **和 cancelled** ABN 都在里面。筛查不在这里做，由脚本按 `settings.CANCEL_CUTOFF_DATE`(2023-01-01) + `KEEP_ENTITY_TYPES`(PRV/PUB) 过滤 |
+
+⚠️ **别拿错东西**：
+- **不是** ABN Lookup 的网页查询 / web service —— 那是单条实时查询，拿不到全量
+- data.gov.au 上也有一个 "ABN Bulk Extract" 数据集，属同源镜像但更新滞后；**以 ABR 官网那份为准**
+
+#### 下载完成后再跑脚本（编号沿用下面注释里的 1 → 5）
 
 ```bash
 cd modules/merchant_kb
 
-# 1. 准备 ABR 报文 → xml_input/
-#    来源：data.gov.au 上的 "ABN Bulk Extract" 数据集（ABR 的官方全量导出，
-#    不是 ABN Lookup 的网页/API）。下载页上通常是 <yyyymmdd>Public01.zip …
-#    Public20.zip 这样的分卷，以页面实际显示为准。
-mkdir -p xml_input manual_entries
-#    解压全部 zip 到 xml_input/ —— 脚本用 sorted(glob("*.xml")) 扫，文件名任意，
-#    但必须是「每个分卷一个 .xml」平铺在里面，不要嵌套子目录。
+# 1. 把 20 个分卷解压/平铺进 xml_input/ —— 脚本用 sorted(glob("*.xml")) 扫，
+#    文件名任意，但必须「每分卷一个 .xml」平铺在目录里，不要嵌套子目录。
+#    （xml_input/ 已在仓库里建好，带 .gitkeep；*.xml 被 gitignore，不入库）
 unzip -o '下载目录/*Public*.zip' -d xml_input/
 ls -la xml_input/*.xml
 
-#    先确认拿对了数据集：每个 XML 应是一串 <ABR> 记录，
-#    内含 <ABN status="..." ABNStatusFromDate="..."> 与
-#    <MainEntity><NonIndividualName><NonIndividualNameText>。
-#    用下面这条抽前几个记录看一眼，对不上就是数据集拿错了，别往下跑：
+#    确认拿对了数据集 —— 对不上就是数据集拿错了，别往下跑：
+#      正确文件的根节点是 TransferInfo（含文件序号 1-20、ABN 记录数、生成日期），
+#      其后跟大量 <ABR>，每个含 <ABN status="..." ABNStatusFromDate="..."> 与
+#      <MainEntity><NonIndividualName><NonIndividualNameText>（个体走 <LegalEntity>）。
 python -c "
-import xml.etree.ElementTree as ET, glob
+import sys, glob, xml.etree.ElementTree as ET
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # 中文 GBK 控制台防崩
 f = sorted(glob.glob('xml_input/*.xml'))[0]
-for _, el in ET.iterparse(f, events=('end',)):
-    if el.tag == 'ABR':
-        print(ET.tostring(el, encoding='unicode')[:400]); break
+ti = abr = False
+for event, el in ET.iterparse(f, events=('end',)):
+    if el.tag == 'TransferInfo' and not ti:
+        ti = True; print('TransferInfo:', ET.tostring(el, encoding='unicode').strip()[:300])
+    elif el.tag == 'ABR' and not abr:
+        abr = True; print('first ABR  :', ET.tostring(el, encoding='unicode')[:400])
+    if ti and abr: break
 "
-#    ⚠️ 全量解压后体积很大（数十 GB 量级），先确认磁盘空间。
-#    xml_input/ 已 gitignore，不入库。
+#    ⚠️ 别顺手拿 ABN Lookup 的单条查询结果凑数 —— 那只有几条，不是全量。
+#    ⚠️ 全量解压后体积很大，先确认磁盘空间；xml_input/ 已 gitignore，不入库。
 
 # 2. 先备份（这是线上规则文件）
 python -c "import shutil; shutil.copy('../../raw/initial_rule/merchant_kb.csv','../../raw/initial_rule/merchant_kb.csv.bak')"
@@ -126,6 +155,10 @@ EOF
 #    归并键**不是** match_key（那是内部 KB 才有的列，最终 3 列里根本没有）。
 #    实际是 find_existing_owner()：先按 normalize_lookup(法定名称) 命中已有商户，
 #    否则拿该实体的各 keyword 去 keyword_owner 索引里认领主；都认不出的才当新商户追加。
+#    ⚠️ ABR 会把 keyword 数撑爆：一个 ABN 可带 300+ 个 <OtherEntity>（注册商号 +
+#       交易名），全都会变成该商户的 keyword，而引擎每商户**只取前 50 个**、超出的
+#       静默丢弃。这就是第 4 步 dedup --full 不能省的原因。
+#    ⚠️ 新商户的 category 写空 —— 由 classify-merchants skill 补（见场景 C）。
 python build_knowledge_base.py
 
 # 4. 清洗 keyword（去短词、停用词、大小写重复、与商户名零重叠的）
@@ -182,6 +215,40 @@ if fails:
 print("\n[gate] [PASS] 通过")
 EOF
 ```
+
+#### 这两步各自在筛什么（动 `settings.py` 前先看）
+
+**第 3 步 build —— 只筛「实体类型」和「是否长期注销」，不碰 category**
+
+`should_keep()` 三道闸（`modules/merchant_kb/settings.py:44-50`）：
+
+| 闸 | 条件 | 丢弃 |
+|----|------|------|
+| 1 | `EntityTypeInd ∈ {PRV, PUB}` | 私企 / 上市公司**之外**的全丢（个体 IND、合伙、信托、政府机构…） |
+| 2 | `status == "CAN"` 且 `ABNStatusFromDate < 20230101` | **2023-01-01 之前注销的** |
+| 3 | 名字为空 | |
+
+> ⚠️ **「倒闭的」不是全丢** —— 闸 2 带截止日，该日之后注销的**保留**：银行流水是历史
+> 数据，近期注销的商户仍会出现在待分类交易里。调整 `CANCEL_CUTOFF_DATE`（`settings.py:50`）
+> 就是在动这条边界。
+>
+> ⚠️ **build 阶段不筛 category。** 新商户进库时 `category` 一律是空串
+> （`build_knowledge_base.py:313`），由 `classify-merchants` 事后再填（场景 C）。
+> 「按 category 排除」只发生在**引擎侧**，不在本模块：`Financial Institutions` 由
+> initial_engine 加载时整行丢弃；Gambling 是 2026-09-02 的一次**有意**清零
+> （见仓库根 CLAUDE.md）。**别在本模块里加 category 过滤**，那是引擎的职责。
+
+**第 4 步 dedup —— 只洗 keyword，不动行**
+
+5 类移除，跑完各自打印计数：
+
+| 计数 | 移除什么 | 阈值常量（`settings.py:58-75`） |
+|------|---------|------------------------------|
+| `removed_len` | 短词 | `MIN_KEYWORD_LEN=5`（`KNOWN_ABBREVIATIONS` 白名单豁免） |
+| `removed_stopword` | 停用词 | `STOPWORDS` |
+| `removed_dup` | 大小写重复 | — |
+| `removed_generic` | 泛化词 | `MIN_DISTINCTIVE_KEYWORD_TOKENS=1` |
+| `removed_namemismatch` | 与商户名 token 重叠率过低 | `KEYWORD_NAME_SIMILARITY_THRESHOLD=0.0`（当前最保守，只清完全无关的污染） |
 
 **硬门（列结构 / 空 category / keyword 格式）必须干净；存量项只追究增量。**
 任何一项 fail 都要停下来报告，不要继续。行数涨是正常的（新 ABR 商户），

@@ -136,7 +136,10 @@ python ../../scripts/sync_rules.py pull --engine initial --include-large   # fin
   同批废弃的还有 `settings.KB_INTERNAL_COLUMNS` 等相关常量（见上方 Architecture）
 - ⚠️ `sample.csv` — Bank transaction sample for verification。**未随合并进入本仓库**
   （`verify_merchants.py:28` 的默认输入仍指向它），运行必须显式传 `--input`
-- `xml_input/*.xml` — ABR bulletins（**当前不存在**，需另行准备或让脚本自行创建）
+- `xml_input/*.xml` — ABR bulletins。**目录已建好（2026-09-24）但为空**，需人工去
+  [ABR 官网的 *ABR bulk data file download* 页](https://www.abr.gov.au/government-agencies/accessing-abr-data/abr-data-products-and-services/abr-bulk-data-file-download)
+  下载 ABN Lookup Bulk Extract 的 20 个分卷（`<yyyymmdd>Public01.xml`…`20.xml`）后平铺进来。
+  下载步骤见 `/merchant-kb-maintenance` skill 场景 A。`*.xml` 被 gitignore，`.gitkeep` 入 git
 - `cache/` — API call caches + `web_classify_tracking.json`。**未入库**（被 `.gitignore` 忽略）
   但**本地存在**：`cache/web_classify_tracking.json` 目前是空脚手架
 - `output/` — 脚本输出（`clean_report.csv` 等）。同样**未入库但本地存在**

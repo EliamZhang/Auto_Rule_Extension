@@ -143,10 +143,18 @@ KB 分类的推荐方式是 `.claude/skills/classify-merchants/SKILL.md` —— 
 以下路径在上游 ME 里是 gitignore 的数据目录，**确实不在本仓库**，
 用到时需要另行准备或让脚本自行创建：
 
-`xml_input/`（ABR 报文）、`data/`、`manual_entries/`、`backup/`、`historical_kb/`、
-`knowledge-base-classify/`、`knowledge-base-web-classify/`，以及 **`sample.csv`** 和
+`data/`、`backup/`、`historical_kb/`、`knowledge-base-classify/`、
+`knowledge-base-web-classify/`，以及 **`sample.csv`** 和
 **`merchant_category_kb.csv`**（分别被 `verify_merchants.py --input`、`merge_category.py --source`
 当作默认输入）。
+
+⚠️ **两个例外：`xml_input/` 和 `manual_entries/` 已建好**（2026-09-24），
+只是里面是空的 —— `xml_input/` 带 `.gitkeep` 所以入 git，`manual_entries/` 整个被忽略：
+
+| 目录 | 放什么 | 从哪来 |
+|------|--------|--------|
+| `xml_input/` | ABR 全量报文，20 个 `<yyyymmdd>Public01.xml`…`20.xml` 平铺（`.xml` 被 gitignore） | 人工去 [ABR 官网](https://www.abr.gov.au/government-agencies/accessing-abr-data/abr-data-products-and-services/abr-bulk-data-file-download) 下载，见 `/merchant-kb-maintenance` 场景 A |
+| `manual_entries/` | 人工整理的商户 CSV（3 列），由 `merge_manual_entries.py --add-dir` 合并 | 手工准备 |
 
 ⚠️ **别与「未入库」混淆**：`cache/` 和 `output/` **未入库但本地存在**（被本模块 `.gitignore`
 忽略，不在 git 里）—— `cache/web_classify_tracking.json` 目前是空脚手架，
