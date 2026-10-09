@@ -3,7 +3,7 @@ Baseline system for measuring candidate rule impact.
 
 Provides two subcommands:
 
-    save  — Capture current classification state from an input .xlsx report.
+    save  — Capture current classification state from an input .xlsx / .csv report.
     diff  — Simulate applying candidate rules and measure gain/conflict per rule.
 
 Does NOT require finv_category_V2 — works purely with text matching against
@@ -37,6 +37,7 @@ from common import (
     load_config,
     get_engine_priority,
     match_series,
+    read_transactions,
     log,
     setup_logging,
 )
@@ -45,17 +46,20 @@ from common import (
 # ── save ─────────────────────────────────────────────────────────────────────
 
 def baseline_save(input_path: Path, output_dir: Path) -> dict[str, Any]:
-    """Capture current classification state from a pre-classified .xlsx.
+    """Capture current classification state from a pre-classified .xlsx / .csv.
+
+    Reads via common.read_transactions so the same file that feeds
+    analyze_gaps.py (which has always accepted .csv) can also seed a baseline.
 
     Stores the baseline as a gzip-compressed JSON file (.json.gz) to handle
     large transaction volumes without excessive disk usage.
     """
-    df = pd.read_excel(input_path, sheet_name="transactions")
+    df = read_transactions(input_path)
     total = len(df)
     log.info("Loaded %s transactions", f"{total:,}")
 
     if "classification_status" not in df.columns:
-        raise ValueError("Input must be a pre-classified .xlsx with 'classification_status' column")
+        raise ValueError("Input must be a pre-classified .xlsx/.csv with 'classification_status' column")
 
     uncl_mask = df["classification_status"].str.strip().str.lower() == "unclassified"
     cl_mask = ~uncl_mask
@@ -310,7 +314,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_save = sub.add_parser("save", help="Capture current classification state")
-    p_save.add_argument("--input", required=True, help="Pre-classified .xlsx report")
+    p_save.add_argument("--input", required=True, help="Pre-classified .xlsx / .csv report")
     p_save.add_argument("--output", required=True, help="Directory for baseline.json.gz")
 
     p_diff = sub.add_parser("diff", help="Simulate candidate rule impact")

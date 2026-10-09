@@ -23,7 +23,9 @@ finv_category_V2 的各引擎规则库仅基于小样本人工提炼。当新的
 - 确认的规则先写入本地 `raw/`，再通过 `--sync_to` 同步到 finv_category_V2
 - **「finv 改了、raw 要跟上」由 `scripts/sync_rules.py pull` 处理**（finv 侧独立演进时）
 - 不需要 finv_category_V2 的 Python 环境或模块
-- 输入数据来自 finv_category_V2 跑完流水线后导出的 .xlsx 分类报告
+- 输入是 **BSCAT 分类效果监控看板 `input/bscat_monitor.html`**（自包含单文件，内嵌
+  `const DATA = {...}` 载荷）。原先的 `.xlsx` 分类报告输入已退役 —— 看板载荷里已含
+  待办类别（todo）、逐类别流向与**内嵌差异样本**，且带优先级靶向
 - ⚠️ **规则文件的「新」不等于「行为一致」**：引擎自身也会重构（如 rent v2.0 从单层变双层）。
   判断某条规则会怎么跑，必须读 finv 的引擎源码，不能只看规则 CSV
 
@@ -1207,14 +1209,18 @@ D:\project\Auto_Rule_Extension\
 │   ├── merchant_kb/       ← ABR XML → merchant_kb.csv 的构建流水线
 │   ├── assessment/        ← BS-CAT 分类性能报告生成
 │   └── liability_enrich/  ← ★ 新增：放贷商缺口发现 + 候选验证（Step 2 见 skill）
-├── input/                 ← 数据入口（.xlsx 分类报告，用户手工放入）
-├── scripts/               ← 共 13 个 .py：11 个在用 + 2 个历史遗留
+├── input/                 ← 数据入口（bscat_monitor.html 看板，用户手工放入；唯一输入）
+├── scripts/               ← 共 14 个 .py：12 个在用 + 2 个历史遗留
 │   ├── common.py              ← 共享工具（配置加载、路径解析、引擎元数据、META_COLUMNS、
 │   │                             候选 pattern 取列、**各引擎的文本归一化与匹配语义**）
 │   ├── sync_upstream.py       ← 同步层 1：GitHub → raw/（HTTPS 直取，不经过 finv）
 │   ├── sync_rules.py          ← 同步层 2：finv 工作副本 ↔ raw 三方对比，只拉不推
+│   ├── parse_monitor.py       ← 解析层：bscat_monitor.html → monitor_data.json /
+│   │                             monitor_samples.csv / monitor_flows.csv（阶段一的入口）
 │   ├── analyze_gaps.py        ← 统计层：发现高频未覆盖模式
-│   ├── label_compare.py       ← 质检层：illion vs finv 分类差异质检报告
+│   ├── label_compare.py       ← 质检层：illion vs finv 分类差异质检报告。
+│   │                             ⚠️ **已退出主链路**（看板本身就是它的产物，skill 不再调用）；
+│   │                             脚本保留，modules/assessment 仍依赖它的报告格式
 │   ├── search_merchant.py     ← 工具：搜规则 CSV 的商户/keyword（列名按角色识别，merchant_kb 与 gambling/rent 都支持）
 │   ├── validate_candidates.py ← 验证层：语法+Schema+重叠检查
 │   ├── baseline.py            ← 基线层：save 保存基线 / diff 模拟影响面
@@ -1228,10 +1234,15 @@ D:\project\Auto_Rule_Extension\
 │   │                             `initial_candidates.csv`）。**不要用**
 │   └── merge_initial.py       ← ⚠️ 一次性硬编码脚本，历史遗留，勿用
 ├── .claude/skills/        ← Claude Code Skill 定义（5 个，见上方「Skills」表）
-├── reviews/               ← 每次运行的审核产物（label_compare.py 的输出）
+├── reviews/               ← 每次运行的审核产物
 │   └── <date>/
+│       ├── monitor_data.json             ← 看板载荷去样本（阶段二靶向用）
+│       ├── monitor_samples.csv           ← 看板内嵌差异样本拍平（喂 analyze_gaps/baseline/test_rules）
+│       ├── monitor_flows.csv             ← 流向汇总（计数真值来源）
 │       ├── gap_summary.json
+│       ├── review_checklist.md           ← diff/extra 桶的排查清单（人工处置，skill 不改规则）
 │       ├── label_compare_report.xlsx     ← modules/assessment 的默认输入
+│       │                                     （主链路已不再生成，看板取代；可由 label_compare.py 单跑）
 │       ├── <engine>_candidates.csv
 │       ├── liability_gaps.json           ← modules/liability_enrich Step 1
 │       ├── liability_candidates.csv      ← Step 2（skill）+ Step 3 回填
@@ -1270,23 +1281,29 @@ D:\project\Auto_Rule_Extension\
        本地改过的文件**不覆盖**（那是「raw 领先」，属推送方向）。先用 `--dry-run` 预览
    0b. `python scripts/sync_rules.py status` → 确认 raw/ 与 finv 无漂移；
        有「finv 领先」则 `pull` 对齐（自动 .bak 备份，只拉不推）
-1. 用户在 finv_category_V2 跑完流水线，导出 .xlsx 分类报告
-2. 用户将 .xlsx 放入 input/ 目录
-3. 用户启动 Claude Code Skill（/auto-rule-extension）
-4. Claude 执行 baseline.py save → 保存当前分类状态快照
-5. Claude 执行 analyze_gaps.py → 生成各引擎的 gap_summary.json
-6. Claude 执行 label_compare.py → 生成 illion vs finv 分类差异质检报告（写入 reviews/<date>/）
-7. Claude 读取 gap_summary + label_compare_report + 各引擎已有规则 → 逐引擎分析 → 生成候选规则 CSV
-8. Claude 执行 validate_candidates.py → 语法/Schema 验证
-9. Claude 执行 baseline.py diff → 影响面分析（gain/conflict）
-10. 🔴 弹出规则确认窗口，用户逐引擎审核候选规则
-11. Claude 执行 test_rules.py → 确认规则在实际数据上的表现
-12. Claude 打印测试分析报告 → 🔴 弹出最终确认窗口
-13. 用户最终确认后，Claude 执行 apply_rules.py → 写入本地 raw/
-14. （可选）执行 apply_rules.py --sync_to <finv_path> 同步到 finv_category_V2
-15. （可选）需要性能报告时：modules/assessment/scripts/run_report.py --with-charts
+1. 用户把最新的 `bscat_monitor.html` 放入 input/ 目录（**唯一输入**）
+2. 用户启动 Claude Code Skill（/auto-rule-extension）
+3. Claude 执行 parse_monitor.py → 拆出 monitor_data.json / monitor_samples.csv / monitor_flows.csv
+4. Claude 执行 analyze_gaps.py --input monitor_samples.csv → 生成各引擎的 gap_summary.json
+5. Claude 读 monitor_data.json 的 todo/catDetails 定靶向桶
+   → 🔴 AskUserQuestion 多选「本次目标引擎」→ 写 review_checklist.md（diff/extra 桶）
+6. Claude 只对**目标引擎 + miss 流向**分析 → 生成候选规则 CSV
+7. Claude 执行 validate_candidates.py → 语法/Schema 验证
+8. Claude 执行 baseline.py save / diff（--input monitor_samples.csv）→ 影响面分析（gain/conflict）
+9. 🔴 弹出规则确认窗口，用户逐引擎审核候选规则（只审本次目标引擎）
+10. Claude 执行 test_rules.py --input monitor_samples.csv → 确认规则在实际数据上的表现
+11. Claude 打印测试分析报告 → 🔴 弹出最终确认窗口
+12. 用户最终确认后，Claude 执行 apply_rules.py → 写入本地 raw/
+13. （可选）执行 apply_rules.py --sync_to <finv_path> 同步到 finv_category_V2
+14. （可选）需要性能报告时：modules/assessment/scripts/run_report.py --with-charts
     → 读 reviews/ 最新底稿，产物落 reports/<时间戳>/
 ```
+
+> ⚠️ **计数口径降级**：`monitor_samples.csv` 只含**差异行**（不是全量交易），
+> 所以 baseline / test_rules 的 gain / conflict 都是「样本范围内」的数字 ——
+> `detail_scope == "full"` 的类别（其全部差异行都内嵌）为该流向全量、即真值，
+> `preview` 的只是下界。且样本行没有真实的 `classification_engine`，
+> 由 `category_catalog.json` 的 owner 引擎反推，`priority_conflict` 判定是**近似值**。
 
 ## 规则同步（GitHub → raw/，以及 raw/ ↔ finv）
 
@@ -1427,7 +1444,11 @@ python scripts/sync_rules.py adopt                           # 把当前状态�
 
 - 任何规则写入操作前必须经过人工确认，不可自动执行
 - 新规则保持各引擎已有规则的 confidence 范围和命名风格
-- 输入必须是 finv_category_V2 流水线处理后的 .xlsx 报告，包含 classification_status 列
+- 输入是 `input/bscat_monitor.html` 看板（**唯一输入**）；看板载荷自带 todo 靶向 +
+  逐类别流向 + 内嵌差异样本，由 `scripts/parse_monitor.py` 拆成
+  `monitor_data.json` / `monitor_samples.csv` / `monitor_flows.csv` 供后续脚本消费
+- **只对 miss 流向补规则**（illion 有标签、我们未分类）；diff（分类冲突）/ extra（过度识别）
+  桶写进 `reviews/<date>/review_checklist.md` 交人工处置 —— 本系统只新增规则，不改不删
 - `raw/` 目录的规则文件是本地工作副本，初始从 finv_category_V2 复制，后续由 apply_rules.py 维护。
   **finv 侧改动要同步下来时用 `sync_rules.py pull`**（会自动 `.bak` 备份），不要手工 cp。
   pull 是「只拉不推」——推送仍然只能走 apply_rules.py 的审批门

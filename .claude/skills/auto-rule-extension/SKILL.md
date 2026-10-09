@@ -1,11 +1,11 @@
 ---
 name: auto-rule-extension
-description: 为 finv_category_V2 交易分类流水线的 10 个引擎自动发现并补充分类规则。用户说"补充规则"、"发现盲区"、"分析未覆盖交易"、"扩展规则库"、"/auto-rule-extension" 时触发。
+description: 基于 BSCAT 监控看板（input/bscat_monitor.html）定位待办类别，针对性为 finv_category_V2 的对应引擎补充分类规则。用户说"补充规则"、"发现盲区"、"分析未覆盖交易"、"扩展规则库"、"/auto-rule-extension" 时触发。
 ---
 
 # Auto Rule Extension Skill
 
-为 finv_category_V2 交易分类流水线的 10 个引擎自动发现并补充规则。
+基于 BSCAT 监控看板（`input/bscat_monitor.html`）定位待办类别，针对性为 finv_category_V2 的对应引擎补充分类规则。
 
 ## 语言要求（强制）
 
@@ -17,47 +17,69 @@ description: 为 finv_category_V2 交易分类流水线的 10 个引擎自动发
 ## 前置条件
 
 运行本 Skill 前，必须确认：
-1. `input/` 目录下有 `.xlsx` 分类报告（取最新日期的文件）
-2. 报告必须包含 `transactions` sheet，且至少有 `text`、`classification_status`、`category`（illion 标签）、`finv_category` 列
-3. `config.json` 的 `finv_root` 指向一个可用的 finv_category_V2 工作副本
+1. `input/bscat_monitor.html` 存在（BSCAT 分类效果监控看板，**唯一输入**）
+2. `config.json` 的 `finv_root` 指向一个可用的 finv_category_V2 工作副本
    （阶段零对齐的是 `raw/`，**不会改 finv** —— 它仍是 `--sync_to` 的推送目标
    和引擎源码来源。规则以 GitHub 为准，不需要手工保证 finv 是最新的）
 
 ## 输入格式
 
-输入文件是 **已跑完流水线的分类报告 .xlsx**，通常包含：
-- `transactions` sheet：每笔交易的分类结果
-  - `text`：交易原始描述
-  - `classification_status`：`classified` / `unclassified`
-  - `classification_engine`：哪个引擎认领的
-  - `category`：**illion 机构的标签**（半自动标注的 ground truth）
-  - `third_party`：illion 的商户识别
-  - `counterparty`：我们流水线的商户识别
-  - `finv_category`：我们流水线的分类结果
-- `income_summary` / `liability_summary` / `category_summary` sheets
+输入是 **`input/bscat_monitor.html`** —— 一个自包含的单文件看板，全部数据以
+`const DATA = {...}` 的形式内嵌其中（约 6 MB），由 `scripts/parse_monitor.py` 解析成三件套。
+**不再需要 .xlsx 分类报告，也不再跑 `label_compare.py`。**
+
+载荷结构（阶段一解析后的落点）：
+
+| 载荷字段 | 内容 | 用途 |
+|----------|------|------|
+| `todo.items[]` | **待办类别**（优先级 P0/P1、触发规则、`type_mix` = miss/diff/extra 计数、`recover_pt`） | 阶段二的靶向依据 |
+| `categories[36]` | 每类别 status / iou_rate / coverage_gap / diff_count（引擎归属另查 `raw/category_catalog.json`） | 全局体检 |
+| `catDetails[cat].types[].flows[]` | 流向（`from`=illion 标签 → `to`=bscat 结果，含 count/amount/users） | 计数真值 |
+| `flows[].samples[]` | 内嵌差异样本（`text` / `dr` / `amount` / `cp`=我方 counterparty / `tp`=illion third_party / `uid`） | 规则生成的证据 |
+| `metrics` / `summary` | 全局覆盖率、一致率、漏识别/多识别/未分类 | 核心指标 |
+
+**两个关键概念**：
+
+- **`（未分类）` 占位符**：`flow.from == "（未分类）"` = illion 没有标签；
+  `flow.to == "（未分类）"` = 我们没有分类。
+- **`full` 标记**：`catDetails[cat].full == True` 的类别，其**全部**差异行都内嵌在样本里；
+  `false` 的类别每个流向只有前几条预览。解析出的 `monitor_samples.csv` 有 `detail_scope`
+  列标记（`full` / `preview`），**决定样本能否支撑频率结论**。
+
+**流向 → 三个桶**（看板 `mismatchTypes` 的口径，也是 `todo.items[].type_mix`）：
+
+| 桶 | 流向 | 含义 | 本 skill 的动作 |
+|----|------|------|----------------|
+| `miss` | illion `X` → （未分类） | **漏识别** | ★ **补规则**（目标 = `X` 的 owner 引擎） |
+| `diff` | illion `X` → bscat `Y` | 分类冲突 | 写排查清单（多半要改/删规则，超出只新增策略） |
+| `extra` | （未分类）→ bscat `Y` | 过度识别（或 illion 漏标） | 写排查清单 |
 
 ## 执行流程
 
-本 Skill 共 8 个阶段，**全程自动推进**，仅在两个节点使用 AskUserQuestion 等待人工审批：
+本 Skill 共 8 个阶段，**全程自动推进**，仅在三个节点使用 AskUserQuestion 等待人工审批：
 
 ```
-阶段零 → 阶段一 → 阶段二 → 阶段三 → 阶段四  （AI 自动完成，无需人工）
-                                        ↓
-                              🔴 阶段五：逐引擎 AskUserQuestion 审批
-                                        ↓ 确认完成 → 自动推进
-                              🔴 阶段六：自动跑 test_rules.py
-                                        ↓
-                              🔴 阶段七：AskUserQuestion 最终确认
-                                        ↓ 确认完成 → 自动推进
-                              阶段八：自动写入规则
+阶段零 → 阶段一 → 阶段二（前半，AI 自动）
+                    ↓
+          🔴 阶段二末：AskUserQuestion 多选本次目标引擎
+                    ↓
+          阶段三 → 阶段四（AI 自动，只处理目标引擎）
+                    ↓
+          🔴 阶段五：逐引擎 AskUserQuestion 审批
+                    ↓ 确认完成 → 自动推进
+          🔴 阶段六：自动跑 test_rules.py
+                    ↓
+          🔴 阶段七：AskUserQuestion 最终确认
+                    ↓ 确认完成 → 自动推进
+          阶段八：自动写入规则
 ```
 
 | 阶段 | 名称 | 触发方式 | 产出 |
 |------|------|----------|------|
 | 零 | 规则同步（GitHub → `raw/`） | 自动，失败时问 | `raw/` 与上游对齐 |
-| 一 | 数据准备与缺口发现 | 自动 | `gap_summary.json` + `label_compare_report.xlsx` |
-| 二 | 解读分析结果 | 自动 | 理解 gaps + disagreements + label 差异 |
-| 三 | 逐引擎智能分析 | 自动 | `*_candidates.csv` |
+| 一 | 看板解析与缺口发现 | 自动 | `monitor_data.json` + `monitor_samples.csv` + `monitor_flows.csv` + `gap_summary.json` |
+| 二 | 看板解读与靶向 | 自动，末段 🔴 **目标多选** | 本次目标引擎清单 + `review_checklist.md` |
+| 三 | 目标引擎智能分析 | 自动（**只做目标引擎**） | `*_candidates.csv` |
 | 四 | 验证（语法 + 影响面） | 自动 | `validation_report.json` + `impact_report.json` |
 | 五 | 🔴 逐引擎 AskUserQuestion 审批 | **AskUserQuestion 等待人工** | status 列更新为 confirmed/review/rejected |
 | 六 | test_rules.py 测试 | 阶段五确认后自动 | `test_report.json` |
@@ -130,72 +152,129 @@ python scripts/sync_rules.py pull            # 有「finv 领先」则拉（自�
 
 ---
 
-### 阶段一：数据准备与缺口发现
+### 阶段一：看板解析与缺口发现
 
-1. 检查 `input/` 目录，取最新的 `.xlsx` 文件，**记录文件名**（后续阶段复用）
-2. **确定输出目录**：使用格式 `reviews/<YYYY-MM-DD_HHMM>/`（日期+时间，同一天多次运行不覆盖）
-3. 执行 `scripts/analyze_gaps.py`：
+1. **确定输出目录**：使用格式 `reviews/<YYYY-MM-DD_HHMM>/`（日期+时间，同一天多次运行不覆盖）
+2. 解析看板三件套：
    ```
-   python scripts/analyze_gaps.py --input input/<latest>.xlsx --output reviews/<date>/
+   python scripts/parse_monitor.py --input input/bscat_monitor.html --output reviews/<date>/
    ```
-4. 执行 `scripts/label_compare.py`：
+   产出 `monitor_data.json`（载荷去掉样本，阶段二读）/ `monitor_samples.csv`
+   （全部内嵌差异样本，视看板版本 3~4 万行）/ `monitor_flows.csv`（流向汇总）。
+   **读它的终端摘要**：日期、全局指标、待办列表、每类的 miss/diff/extra 与建议目标引擎。
+3. 在样本上跑缺口发现（保留原有的 pattern 聚类 + 引擎路由，供阶段三用）：
    ```
-   python scripts/label_compare.py --input input/<latest>.xlsx --output reviews/<date>/label_compare_report.xlsx
+   python scripts/analyze_gaps.py --input reviews/<date>/monitor_samples.csv --output reviews/<date>/
    ```
-5. 读取 `reviews/<date>/gap_summary.json`
+4. 读取 `reviews/<date>/gap_summary.json`
 
-**产出**：`gap_summary.json` + `label_compare_report.xlsx`
+> ⚠️ **不要跑 `label_compare.py`** —— 看板本身就是它的产物，外加优先级靶向，属重复劳动。
+> 该脚本仍留在仓库里（`modules/assessment` 依赖它的格式），但**不在本 skill 的链路上**。
+>
+> ⚠️ `gap_summary.json` 的 `disagreements` 字段在本输入下是**退化**的：样本文件只含差异行，
+> 所以「已分类样本」100% 会被计成 disagreement。**忽略它** —— 差异分析改由看板的
+> `type_mix` / `catDetails` 流向承担（阶段二）。
 
-### 阶段二：解读分析结果
+**产出**：`monitor_data.json` + `monitor_samples.csv` + `monitor_flows.csv` + `gap_summary.json`
 
-**同时阅读两份报告**，它们互相补充：
+### 阶段二：看板解读与靶向
 
-#### A. `gap_summary.json` — 未覆盖模式（盲区发现）
+**读 `reviews/<date>/monitor_data.json`**（不再有 xlsx / label_compare 报告）。
 
-聚焦于 `classification_status == unclassified` 的交易。每种模式附带：
-- `pattern_norm`：归一化后的文本模板
-- `count`：出现频次
-- `illion_category`：illion 给的分类标签（可能为空）
-- `samples`：原始交易描述样例（最多 5 条）
-- `third_parties`：illion 识别的商户名列表
+#### A. 待办清单（`todo.items`）
 
-#### B. `label_compare_report.xlsx` — illion vs finv 分类差异（精准定位）
+每项带 `name`（类别）/ `level`（P0/P1）/ `issueType` / `recommendedAction` /
+`ruleId` + `ruleTitle`（触发它的监控规则）/ `type_mix`（miss/diff/extra 笔数）/
+`recover_pt`（补齐可回收的百分点）/ `scope`。
+**按 P0 → P1 优先序解读**；P0 通常是被覆盖扫描规则影响的类别。
 
-报告包含 5 个 Sheet：
+#### B. 桶 → 动作分类（决定本次能做什么）
 
-**00_核心对比**：核心指标、逐 Category 差异与优化优先级（P1/P2/P3）、主要差异流向。P1 = 高差异量 + 高贡献率，最优先处理。
+对每个待办类别，用 `catDetails[name].types[].flows[]` 看它的实际流向（`from` → `to`），
+笔数以 `monitor_flows.csv` 的 `count` 为**全量真值**（样本只是证据）：
 
-**01_差异诊断地图**：Top N 差异流向、完整数量矩阵（行=illion, 列=finv）、差异流向占比矩阵。
+| 桶 | 流向 | 含义 | 本次动作 |
+|----|------|------|---------|
+| `miss` | illion `X` → （未分类） | 漏识别 | ★ **补规则**：目标引擎 = `X` 的 owner 引擎（查 `raw/category_catalog.json` 的 `owner_engine_id` = `gap_summary.json` 的 `category_catalog` 字段，或直接读 `parse_monitor.py` 摘要里的「建议目标」） |
+| `diff` | illion `X` → bscat `Y` | 分类冲突 | ✍️ 写排查清单 —— 修它要**改/删**规则，超出本 skill 的「只新增」策略 |
+| `extra` | （未分类）→ bscat `Y` | 过度识别或 illion 漏标 | ✍️ 写排查清单 |
 
-**02_业务聚类对比**：按业务聚类的差异汇总。
+#### C. 🔴 AskUserQuestion 多选：本次目标引擎
 
-**03_排查明细**：按排查优先级排序的逐笔差异明细，包含交易文本、金额、dr_cr、原分类、新分类、排查建议。
+**不默认全量**。按本次 `todo.items` 的实际引擎分布**动态生成 ≤4 个选项组**（multiSelect=true），
+每组 = 一类引擎 + 它对应的待办类别 + miss 总量，让用户勾选本轮做哪些：
 
-**04_模型监控**：分类引擎的监控统计（覆盖情况、优先级等）。
+```javascript
+AskUserQuestion({
+  questions: [{
+    question: "本次看板共 13 项待办。请选择本轮要补充规则的引擎组（可多选）：",
+    header: "目标选择",
+    multiSelect: true,
+    options: [
+      { label: "income — Wages（miss 99，P0）",
+        description: "覆盖扫描类缺口；P0 优先级最高" },
+      { label: "transfer — External Transfers（miss 11,252）",
+        description: "量最大、目标最单纯（只输出两个转账 category）" },
+      { label: "initial + catch_all — Retail/Gyms/Entertainment/Travel/Education/Information/Subscription TV（miss 1,431）",
+        description: "商户名走 initial、通用词走 catch_all，需逐条分辨" },
+      { label: "liability + all_other_credit + fee — Debt Collection/Overdrawn/All Other Credits（miss 1,745）",
+        description: "多文件引擎，需指定 target_file" }
+    ]
+  }]
+})
+```
 
-**差异类型 → 规则挖掘方向**：
+组名/内容**按本次实际 todo 生成**，不要照抄上面这组示例（它是 2026-10-09 那次的分布）。
+用户可用 Other 自定义（如「只做 P0」）。**产出「本次目标引擎清单」**，阶段三~五只碰这些引擎。
 
-| 差异类型 | 规则挖掘方向 |
-|---------|------------|
-| 分类不一致 (mismatch) | finv 分类错误，需要修正规则或添加排除 |
-| 仅 illion 有 (reference_only) | finv 漏识别，需要为新类别添加规则 |
-| 仅 finv 有 (candidate_only) | finv 多识别，检查是否过度分类 |
+> 类别若**只有 diff/extra、没有 miss**（如 2026-10-09 的 `SACC Loans`：0/1406/8），
+> 补规则不可解 —— **不进目标选项**，直接进排查清单。
 
-**分析策略**：先看 `00_核心对比` P1/P2 Category → 再看 `01_差异诊断地图` 看流向 → 用 `03_排查明细` 看具体文本 → 结合 `gap_summary.json` 形成完整策略。
+#### D. 写 `reviews/<date>/review_checklist.md`（人工排查用）
 
-#### C. illion 标签的利用策略
+把所有 **diff / extra** 桶写成清单文件，供人工后续处置。**本 skill 不修改、不删除任何规则**
+（保守策略第 6 条），这类问题必须由人决定。
 
-illion 标签是半自动标注，不是 100% 准确的 ground truth。使用策略：
+格式：
+
+```markdown
+# 差异排查清单 — 2026-10-09
+
+> 来源: input/bscat_monitor.html（看板日期 2026-09-22）
+> 本清单只列 diff / extra 桶（补规则不可解），共 N 个流向。本 skill 不会自动处置。
+
+## 1. SACC Loans — diff 1,406 笔（owner: liability）
+- 主要流向：`SACC Loans → Non SACC Loans`（1,201 笔）、`SACC Loans → Unknown Loans`（205 笔）
+- 涉及引擎：liability
+- top 样本（来自 monitor_samples.csv）：
+  - `...`
+- 建议动作：核对 liability 的 product_type 判定（SACC / non-SACC 分界）
+```
+
+**每类一节**：类别 + 桶 + 笔数 + owner 引擎 + 主要流向（取自 `monitor_flows.csv`）
++ 3~5 条样本（按 `monitor_samples.csv` 的 `category` / `flow_type` 过滤）+ 建议动作。
+
+#### E. illion 标签的利用策略
+
+illion 标签 = 样本的 `category` 列（即 `flow.from`），商户名 = 样本的 `third_party`（`tp`）：
 
 | 场景 | 策略 |
 |------|------|
-| illion 标签存在 + 未分类 | **高置信候选规则**，confidence 可偏高（0.80-0.90） |
-| illion 标签存在 + 已分类但两者不一致 | 需判断：illion 更合理→修正规则；finv 更合理→忽略 illion；粒度不同→取决于引擎职责 |
-| illion 标签为空 + 未分类 | 保守估计 category，降低 confidence |
+| illion 标签存在 + 该笔未分类（**miss 桶**） | **高置信候选**，confidence 可偏高（0.80-0.90） |
+| illion 标签存在 + 已分类但两者不一致（**diff 桶**） | 不改规则 —— 进排查清单，人工判断谁更合理 |
+| illion 无标签（**extra 桶**） | finv 多识别或 illion 漏标 —— 进排查清单 |
+
+**产出**：本次目标引擎清单 + `review_checklist.md`
 
 ---
 
 ### 阶段三：逐引擎智能分析（核心）
+
+**🚨 引擎范围 = 阶段二选定的「本次目标引擎清单」**，其余引擎本轮完全不动。对每个目标引擎：
+
+- 只处理**它的待办类别**的 **miss 流向**（illion 有标签、我们未分类）；
+- 阶段二 D 写进排查清单的 diff / extra 桶**不生成候选** —— 那要改/删规则；
+- `gap_summary.json` 只当「未分类样本已聚类」的现成素材用，**引擎归属仍按 3.0 重审**。
 
 #### 3.0 重审 gap_summary 的引擎归属（强制，不可跳过）
 
@@ -324,7 +403,9 @@ Step G3: 根据查询结果采取行动：
 **商户真实性验证（三步）**：
 
 **Step A: 验证商户真实性** — 不能假设从交易文本中截取的名字就是真实商户名。
-1. **illion third_party 交叉验证**（优先）：检查 gap_summary 中 `third_parties` 字段，非空且不是 "nan" → 直接采信
+1. **illion third_party 交叉验证**（优先）：在 `monitor_samples.csv` 里按该 pattern 的样本文本
+   （`text` 列）过滤，看 `third_party` 列（看板样本的 `tp`）是否非空 → 非空直接采信。
+   （`gap_summary.json` 的 `third_parties` 是同一数据的旧来源，样本表更直接、更全）
 2. **联网搜索验证**：用商户名 + 地点搜索，例: `WebSearch("BROKEN HILL MUSICIANS club Australia")`
 3. **都无法验证 → 丢弃该候选**，标记为 `unverified_merchant`
 
@@ -535,7 +616,8 @@ BRAND_MAP = {
 
 ##### 3.4.1.1 keyword 变体发现方法（强制遵循）
 
-生成 keyword 变体时，**必须先看 gap_summary.json 中的 `samples`（原始交易文本）**，与 merchant_kb 中已有关键词逐条对比，找出 clean_text 前后的差异。
+生成 keyword 变体时，**必须先看 `samples`（原始交易文本）**，与 merchant_kb 中已有关键词逐条对比，找出 clean_text 前后的差异。
+`gap_summary.json` 每个 pattern 只留 5 条样例，**更完整的原始文本去 `monitor_samples.csv` 里按 pattern 过滤**（`text` 列）。
 
 **核心诊断流程**：
 
@@ -641,6 +723,11 @@ for _, row in updates.iterrows():
 - 列名与原始 CSV 完全一致（schema 见 CLAUDE.md）
 - 额外增加列：`status`（默认 `☐ confirm`）、`hit_count`、`risk_level`、`illion_category`、`samples`、`target_file`（仅多文件引擎需要）
 - 按 hit_count 降序排列
+- ⚠️ **`hit_count` 的口径 = 在 `monitor_samples.csv` 里的样本命中数**，不是全量交易命中数
+  —— 样本文件只含差异行。`detail_scope == "full"` 的类别样本 = 该流向全量，hit_count 即真值；
+  `preview` 只是下界。**核对 `monitor_flows.csv` 的 `count` 判断可信度**。
+- ⚠️ **只对 `detail_scope == "full"` 的类别生成候选**（保守策略第 10 条）—— 预览样本
+  不足以支撑频率结论。若未来某次 todo 命中 preview 类别，只摘报给用户看，不生成规则。
 
 ---
 
@@ -685,20 +772,33 @@ python scripts/validate_candidates.py --review_dir reviews/<date>/
 
 #### 4.2 基线影响分析
 
-**候选规则生成前**先保存基线：
+**候选规则生成前**先保存基线（该命令只读样本文件，与候选内容无关 —— 阶段四里补跑即可）：
 ```
-python scripts/baseline.py save --input input/<latest>.xlsx --output baseline/<date>/
+python scripts/baseline.py save --input reviews/<date>/monitor_samples.csv --output baseline/<date>/
 ```
 
 **候选规则生成后**模拟影响面：
 ```
-python scripts/baseline.py diff --candidates reviews/<date>/ --baseline baseline/<date>/ --input input/<latest>.xlsx
+python scripts/baseline.py diff --candidates reviews/<date>/ --baseline baseline/<date>/ --input reviews/<date>/monitor_samples.csv
 ```
 
 每条规则显示：**gain**（新分类多少条）、**conflicts**（覆盖多少条已分类交易）、`priority_conflict: true` 表示会真正覆盖已有分类。
 
+> ⚠️ **本链路的计数口径是「样本范围内」，不是全量交易**（改用看板后的固有降级，务必知情）：
+>
+> | 指标 | 口径 | 可信度 |
+> |------|------|--------|
+> | `gain` | 在 `monitor_samples.csv`（差异行）里的新增命中数 | `full` 类别 = 该流向全量真值；`preview` = 下界 |
+> | `conflicts` | 样本里已被分类的行中被本规则改判的条数 | 同上；且冲突行的 `classification_engine` 是**反推值**（见下） |
+> | `priority_conflict` | 由**反推的** `classification_engine` + 引擎优先级算出 | **近似值** |
+>
+> **`classification_engine` 的近似性**：差异行上我们不知道当初是哪个引擎认领的，
+> `parse_monitor.py` 用 `category_catalog.json` 的 `owner_engine_id` 首项代替。
+> 影响面：`priority_conflict` 判定为近似（catch_all 恒为末位引擎、其冲突判定不受影响；
+> 「同引擎不算冲突」的性质也不变）。
+>
 > ⚠️ **`gain` 应当与候选行自带的 `hit_count` 基本一致 —— 对不上就是有问题，别硬信 gain。**
-> 两者量的是同一批「未分类」样本，只是一个由候选生成器数、一个由 `baseline.py` 数。
+> 两者量的是同一批样本，只是一个由候选生成器数、一个由 `baseline.py` 数。
 >
 > `baseline.py` 必须按**目标引擎的预处理与匹配方式**模拟，否则会静默低估成 0：
 > 候选 CSV 并不声明这些语义（`initial_candidates.csv` 的列叫 `keywords` 且**没有**
@@ -732,11 +832,9 @@ python scripts/baseline.py diff --candidates reviews/<date>/ --baseline baseline
 
 - **🚨 弹窗前必须先打印规则详情（强制）**：在弹出 AskUserQuestion **之前**，必须先在对话中用文本逐条打印该引擎所有规则的完整详情（规则名、pattern、category、gain、conflict、风险等级、illion标签、样本等），让用户在对话记录中能清晰看到每条规则的具体内容。AskUserQuestion 弹窗只放**简短摘要和选项**，不要把大量规则详情塞进 question 字段。**违规即为流程错误。**
 - **逐引擎审批**：每个引擎单独弹一个 AskUserQuestion
-- **引擎顺序**：按规则数量从少到多排列，**覆盖全部 10 个引擎**：
-  `dishonour(14) → all_other_credit(33) → fee(113) → income(217) → transfer(235) →
-  catch_all(439) → liability(1,072) → gambling(1,838) → rent(21,809) → initial(874,600)`
-  （规则数取自 `raw/` 实测）。先审小引擎：弹窗轻、能尽早让用户建立判断尺度，
-  大引擎（尤其 initial）留到最后。
+- **引擎顺序**：**只审「本次目标引擎」**（阶段二选定的清单），按**本次候选规则数从少到多**排列。
+  先审小批量的：弹窗轻、能尽早让用户建立判断尺度，大批量的（尤其 initial）留到最后。
+  **没有候选规则的目标引擎直接跳过**，不要为它弹空窗。
 - **使用 AskUserQuestion，不是 HTML**：审批交互依赖 Claude Code 原生弹窗
 
 #### 5.2 弹窗格式
@@ -869,11 +967,14 @@ print(f"exported {len(rules)} confirmed rules")
 ```bash
 python scripts/test_rules.py \
     --rules reviews/<date>/confirmed_rules.json \
-    --input input/<latest>.xlsx \
+    --input reviews/<date>/monitor_samples.csv \
     --output reviews/<date>/test_report.json
 ```
 
 `--rules` / `--input` / `--output` **三个都是必填**；`--rules` 指向上一步 5.5 导出的 JSON。
+
+> ⚠️ 计数口径同 4.2 —— `增益` / `冲突` 都是**样本范围内**的数字（`full` 类别为全量真值，
+> `preview` 为下界），冲突行的 `classification_engine` 是反推值。
 
 ---
 
@@ -947,6 +1048,15 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
    - **fee 规则从 CSV 加载** — 可直接追加 CSV，**大小写不敏感**（自 2026-08-20 起），可带 unclassified_only/dr_cr 列
    - **liability counterparty 匹配边界是 `(?<![A-Za-z])...(?!A-Za-z)`，不是 `\b`** — 数字可穿透；counterparty CSV 无 rule_type 列，regex 规则需先加列
    - **transfer counterparty 匹配是子串** — 会子串匹配
+9. **只对 miss 流向生成规则**：diff（分类冲突）/ extra（过度识别）桶写进
+   `reviews/<date>/review_checklist.md`，**不生成候选** —— 修它们要改/删规则，超出「只新增」策略
+10. **只对 `detail_scope == "full"` 的类别生成规则**：预览类别每流向只有几条样本，频率结论不成立。
+    若未来某次 todo 命中 preview 类别，**只摘报不生成**
+11. **候选必须锚定看板点名的类别**：`category` 列 = 该 miss 流向的 illion 标签（看板点名要补的那个类别），
+    引擎从该类别 owner 引擎里选真正能认领的那个（按 3.0 重审 + 3.2 约束）。
+    **不得凭样本自由发挥到其他类别**。例：`Wages` 的 miss 只能走 income、
+    `External Transfers` 的 miss 只能走 transfer；博彩商户按 3.1-G 走 gambling
+    的 institution 行（illion 标签本就是 `Gambling`，不算串门）
 
 ## 脚本修改规范（硬性约束）
 
@@ -966,13 +1076,17 @@ python scripts/apply_keyword_updates.py --review_dir reviews/<date>/
 
 ## illion 标签特别说明
 
-- illion 是第三方数据富化服务，提供 `category` 和 `third_party`（商户识别）
+- illion 是第三方数据富化服务，提供 `category`（分类标签）和 `third_party`（商户识别）。
+  在看板样本里分别落在 `monitor_samples.csv` 的 `category` 列（= `flow.from`，
+  miss/diff 桶才有）与 `third_party` 列（= 看板样本的 `tp`）
 - 其标签可作为**高置信度参考**，但不是 100% 准确的 ground truth
-- 当 illion 标签与 finv_category 不一致时：
-  - `illion 更具体、finv 更泛` → 考虑加规则细化
-  - `illion 与 finv 粒度不同`（如 illion=Dining Out, finv=Entertainment）→ 取决于上下文
-  - `illion 明显错误` → 忽略
-- 当 illion 有标签而交易未被分类 → **优先生成规则**（这是最高价值的 gap）
+- 三种组合的处理：
+  - **illion 有标签 + 我们未分类（miss 桶）** → **优先生成规则**（最高价值的 gap，
+    也是本 skill 唯一动手生成的桶）
+  - **illion 有标签 + 我们也有标签但不一致（diff 桶）** → 写排查清单，人工判断
+    （`illion 更具体` / `粒度不同` / `illion 明显错误` 都要人来裁，涉及改删规则）
+  - **illion 无标签 + 我们已分类（extra 桶）** → 写排查清单
+- `third_party` 非空时可直接采信为真实商户名（3.1 Step A 的默认验证手段）
 
 ## 各引擎规则格式参考
 
